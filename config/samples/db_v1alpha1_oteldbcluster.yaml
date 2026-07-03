@@ -1,0 +1,81 @@
+apiVersion: db.oteldb.io/v1alpha1
+kind: OtelDBCluster
+metadata:
+  name: oteldbcluster-sample
+  labels:
+    app.kubernetes.io/name: oteldb-operator
+spec:
+  # Five symmetric oteldb nodes. Should be >= cluster.replicationFactor for real redundancy.
+  replicas: 5
+
+  # etcd is bring-your-own (not managed by this operator). Point at your etcd endpoints.
+  # For a quick local spin-up, apply config/samples/etcd-dev.yaml first (NOT for production).
+  etcd:
+    endpoints:
+      - "http://etcd-0.etcd:2379"
+      - "http://etcd-1.etcd:2379"
+      - "http://etcd-2.etcd:2379"
+
+  # Default durable tier: each node keeps its own shards on a local PersistentVolume; cross-node
+  # RF replication provides redundancy (shared-nothing). Switch backend to s3 for a shared store.
+  storage:
+    backend: file
+    dir: /var/lib/oteldb
+    size: 100Gi
+    # storageClassName: fast-ssd
+
+  cluster:
+    replicationFactor: 3
+    shardsPerTenant: 4   # spread each tenant's series across 4 placement units
+    peerPort: 7946
+
+  # All signals served from the clustered embedded engine.
+  signals:
+    metrics: true
+    logs: true
+    traces: true
+    profiles: true
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+
+  # Physically spread pods across zones (ring zone-awareness is separate; see docs).
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: oteldb
+
+  service:
+    type: ClusterIP
+---
+# Example using a shared S3-compatible object store (e.g. MinIO) instead of per-node disk.
+# Credentials come from a Secret via the AWS default credential chain — never the ConfigMap.
+apiVersion: db.oteldb.io/v1alpha1
+kind: OtelDBCluster
+metadata:
+  name: oteldbcluster-s3-sample
+spec:
+  replicas: 3
+  etcd:
+    endpoints: ["http://etcd:2379"]
+  storage:
+    backend: s3
+    dir: /var/lib/oteldb   # used as the local WAL dir for unflushed head
+    size: 20Gi
+    s3:
+      bucket: oteldb
+      endpoint: "http://minio.minio:9000"
+      region: us-east-1
+      forcePathStyle: true
+      credentialsSecret:
+        name: oteldb-s3-credentials
+        # keys default to AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+  cluster:
+    replicationFactor: 2
