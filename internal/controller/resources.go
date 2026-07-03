@@ -138,7 +138,7 @@ func buildStatefulSet(cr *dbv1alpha1.OtelDBCluster, configHash string) *appsv1.S
 	annotations := mergeLabels(map[string]string{"oteldb.io/config-hash": configHash}, cr.Spec.PodAnnotations)
 
 	container := corev1.Container{
-		Name:            "oteldb",
+		Name:            appName,
 		Image:           image,
 		ImagePullPolicy: cr.Spec.ImagePullPolicy,
 		Args:            []string{"--config=" + configMountPath + "/" + configFileName},
@@ -222,20 +222,20 @@ func podEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
 		cs := cr.Spec.Storage.S3.CredentialsSecret
 		akKey := cs.AccessKeyIDKey
 		if akKey == "" {
-			akKey = "AWS_ACCESS_KEY_ID"
+			akKey = envAWSAccessKeyID
 		}
 		skKey := cs.SecretAccessKeyKey
 		if skKey == "" {
-			skKey = "AWS_SECRET_ACCESS_KEY"
+			skKey = envAWSSecretAccessKey
 		}
 		env = append(env,
-			corev1.EnvVar{Name: "AWS_ACCESS_KEY_ID", ValueFrom: &corev1.EnvVarSource{
+			corev1.EnvVar{Name: envAWSAccessKeyID, ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cs.Name},
 					Key:                  akKey,
 				},
 			}},
-			corev1.EnvVar{Name: "AWS_SECRET_ACCESS_KEY", ValueFrom: &corev1.EnvVarSource{
+			corev1.EnvVar{Name: envAWSSecretAccessKey, ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cs.Name},
 					Key:                  skKey,

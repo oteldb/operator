@@ -228,7 +228,8 @@ func TestConfigHashChangesWithContent(t *testing.T) {
 	if configHash("a") == configHash("b") {
 		t.Errorf("config hash must differ for different content")
 	}
-	if configHash("a") != configHash("a") {
-		t.Errorf("config hash must be stable")
+	first, second := configHash("a"), configHash("a")
+	if first != second {
+		t.Errorf("config hash must be stable: %q != %q", first, second)
 	}
 }

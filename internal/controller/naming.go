@@ -17,11 +17,24 @@ limitations under the License.
 package controller
 
 import (
+	"maps"
+
 	dbv1alpha1 "github.com/oteldb/operator/api/v1alpha1"
 )
 
 // defaultImage is the oteldb image used when the CR does not pin one.
-const defaultImage = "ghcr.io/oteldb/oteldb:v0.31.0"
+const defaultImage = "ghcr.io/oteldb/oteldb:v0.46.0"
+
+// Repeated string values, extracted so a single source of truth drives config and labels.
+const (
+	appName        = "oteldb"          // app label value and container name
+	valStorage     = "storage"         // oteldb signal-backend value and component label
+	defaultDataDir = "/var/lib/oteldb" // default storage.dir / WAL dir
+	keyBind        = "bind"            // oteldb per-API bind config key
+
+	envAWSAccessKeyID     = "AWS_ACCESS_KEY_ID"
+	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
+)
 
 // Container ports exposed by every oteldb node. Names must be <= 15 chars (k8s port-name limit).
 const (
@@ -60,7 +73,7 @@ func (n resourceNames) clientService() string { return n.base }
 // selectorLabels are the immutable pod-selector labels for a cluster's oteldb pods.
 func selectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     "oteldb",
+		"app.kubernetes.io/name":     appName,
 		"app.kubernetes.io/instance": cr.Name,
 	}
 }
@@ -69,18 +82,14 @@ func selectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
 func commonLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
 	l := selectorLabels(cr)
 	l["app.kubernetes.io/managed-by"] = "oteldb-operator"
-	l["app.kubernetes.io/component"] = "storage"
+	l["app.kubernetes.io/component"] = valStorage
 	return l
 }
 
 // mergeLabels returns a new map combining base with extra (extra wins).
 func mergeLabels(base, extra map[string]string) map[string]string {
 	out := make(map[string]string, len(base)+len(extra))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range extra {
-		out[k] = v
-	}
+	maps.Copy(out, base)
+	maps.Copy(out, extra)
 	return out
 }

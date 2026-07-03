@@ -61,7 +61,7 @@ for a fuller example including the S3 backend.
 | Field | Purpose |
 |---|---|
 | `replicas` | Number of oteldb nodes (StatefulSet size). Use `>= cluster.replicationFactor`. |
-| `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.31.0`). |
+| `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.46.0`). |
 | `etcd.endpoints` | **Required.** External etcd endpoint list. |
 | `storage.backend` | `file` (default, per-node PVC) or `s3` (shared object store). |
 | `storage.dir` / `size` / `storageClassName` / `accessModes` | Per-pod data volume (parts + WAL). |

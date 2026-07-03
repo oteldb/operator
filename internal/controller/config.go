@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	"sigs.k8s.io/yaml"
 
@@ -31,18 +32,18 @@ import (
 func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string, error) {
 	cfg := map[string]any{
 		// Serve every signal from the embedded clustered storage engine; no ClickHouse.
-		"metrics_backend": "storage",
-		"traces_backend":  "storage",
-		"logs_backend":    "storage",
-		"tempo":           map[string]any{"bind": "0.0.0.0:3200"},
-		"prometheus":      map[string]any{"bind": "0.0.0.0:9090"},
-		"loki":            map[string]any{"bind": "0.0.0.0:3100"},
-		"health_check":    map[string]any{"bind": "0.0.0.0:13133"},
+		"metrics_backend": valStorage,
+		"traces_backend":  valStorage,
+		"logs_backend":    valStorage,
+		"tempo":           map[string]any{keyBind: "0.0.0.0:3200"},
+		"prometheus":      map[string]any{keyBind: "0.0.0.0:9090"},
+		"loki":            map[string]any{keyBind: "0.0.0.0:3100"},
+		"health_check":    map[string]any{keyBind: "0.0.0.0:13133"},
 	}
 
 	if profilesEnabled(cr) {
-		cfg["profiles_backend"] = "storage"
-		cfg["pyroscope"] = map[string]any{"bind": "0.0.0.0:4040"}
+		cfg["profiles_backend"] = valStorage
+		cfg["pyroscope"] = map[string]any{keyBind: "0.0.0.0:4040"}
 	}
 
 	storage := map[string]any{
@@ -116,9 +117,7 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 		if err := json.Unmarshal(raw.Raw, &extra); err != nil {
 			return "", fmt.Errorf("parse extraConfig: %w", err)
 		}
-		for k, v := range extra {
-			cfg[k] = v
-		}
+		maps.Copy(cfg, extra)
 	}
 
 	out, err := yaml.Marshal(cfg)
@@ -146,7 +145,7 @@ func dirOf(cr *dbv1alpha1.OtelDBCluster) string {
 	if d := cr.Spec.Storage.Dir; d != "" {
 		return d
 	}
-	return "/var/lib/oteldb"
+	return defaultDataDir
 }
 
 func peerPortOf(cr *dbv1alpha1.OtelDBCluster) int32 {
