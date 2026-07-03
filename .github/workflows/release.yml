@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+jobs:
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      # Consolidated CRDs + RBAC + manager Deployment, pinned to this tag's image
+      # (the image itself is built and pushed by build.yml on the same tag).
+      - name: Build installer manifest
+        run: make build-installer IMG=ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@72f2c25fcb47643c292f7107632f7a47c1df5cd8 # v2.3.2
+        with:
+          files: dist/install.yaml
+          generate_release_notes: true
+          body: |
+            Install this release directly with:
+
+            ```sh
+            kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml
+            ```
+
+            Container image: `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`

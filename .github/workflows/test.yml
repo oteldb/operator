@@ -2,16 +2,18 @@ name: Tests
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions: {}
 
 jobs:
   test:
+    name: Unit & envtest
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    name: Run on Ubuntu
-    runs-on: ubuntu-latest
     steps:
       - name: Clone the code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -27,3 +29,38 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: cover.out
+          if-no-files-found: ignore
+
+  verify-generated:
+    name: Generated files up to date
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Regenerate manifests, deepcopy and go.mod
+        run: |
+          make manifests generate
+          go mod tidy
+
+      - name: Fail if anything changed
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated files are out of date. Run 'make manifests generate && go mod tidy' and commit the result." >&2
+            exit 1
+          fi
