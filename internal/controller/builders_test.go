@@ -17,8 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -152,6 +154,46 @@ func TestRenderConfigExtraConfigOverrides(t *testing.T) {
 	if prom["bind"] != "0.0.0.0:9091" {
 		t.Errorf("extraConfig should override prometheus.bind: %v", prom["bind"])
 	}
+}
+
+// Regression: a shallow merge of extraConfig used to replace the whole storage block, silently
+// downgrading the backend to memory and dropping the node out of the cluster.
+func TestRenderConfigExtraConfigPreservesStorageBlock(t *testing.T) {
+	cr := testCluster()
+	cr.Spec.Cluster.ReplicationFactor = ptr.To[int32](3)
+	cr.Spec.ExtraConfig = &runtime.RawExtension{
+		Raw: []byte(`{"storage":{"policy":{"recompress":{"after":"3d","level":19}}}}`),
+	}
+	out, err := renderConfig(cr, cr.Spec.Etcd.Endpoints)
+	require.NoError(t, err)
+
+	var cfg map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(out), &cfg))
+	storage, ok := cfg["storage"].(map[string]any)
+	require.True(t, ok, "storage block missing")
+
+	require.Equal(t, "file", storage["backend"])
+	require.Equal(t, "/var/lib/oteldb", storage["dir"])
+	cluster, ok := storage["cluster"].(map[string]any)
+	require.True(t, ok, "cluster block missing")
+	require.Equal(t, []any{"http://etcd:2379"}, cluster["etcd"])
+	require.EqualValues(t, 3, cluster["rf"])
+
+	policy, ok := storage["policy"].(map[string]any)
+	require.True(t, ok, "extraConfig policy not merged")
+	require.Equal(t, map[string]any{"after": "3d", "level": float64(19)}, policy["recompress"])
+}
+
+func TestRenderConfigExtraConfigReservedPath(t *testing.T) {
+	cr := testCluster()
+	cr.Spec.ExtraConfig = &runtime.RawExtension{
+		Raw: []byte(`{"storage":{"cluster":{"etcd":["http://other:2379"]}}}`),
+	}
+	_, err := renderConfig(cr, cr.Spec.Etcd.Endpoints)
+	require.ErrorContains(t, err, "storage.cluster")
+
+	var invalid validationError
+	require.True(t, errors.As(err, &invalid), "reserved paths must fail as a spec validation error")
 }
 
 func TestBuildStatefulSetIdentityAndVolumes(t *testing.T) {

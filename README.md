@@ -75,7 +75,32 @@ for a fuller example including the S3 backend.
 | `engine` | Storage engine tuning: `flushInterval`, `readCacheSize`, `decodeCacheSize`, `decodeMemoryLimit`, `aggregateStats`. |
 | `service.type` / `annotations` | Client Service exposing the query/ingest APIs. |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `podSecurityContext`, `securityContext`, `podAnnotations`, `podLabels`, `serviceAccountName` | Standard pod scheduling/security knobs. |
-| `extraConfig` | Arbitrary raw oteldb config merged over the generated config (top-level keys win) — for fields the CRD does not model (auth, retention policy, prometheus tuning, …). |
+| `extraConfig` | Arbitrary raw oteldb config **deep-merged** over the generated config — for fields the CRD does not model (auth, retention policy, prometheus tuning, …). Nested objects merge key by key (`storage.policy` does not wipe `storage.backend`); operator-owned paths are [reserved](#reserved-extraconfig-paths). |
+
+### Reserved `extraConfig` paths
+
+`extraConfig` is merged recursively, so it can add keys the CRD does not model:
+
+```yaml
+extraConfig:
+  storage:
+    policy:
+      recompress: {after: 3d, level: 19}   # keeps backend/dir/cluster
+```
+
+The paths the operator renders from the spec are **reserved**: an `extraConfig` that sets one is
+rejected, and the CR goes `Degraded` with reason `InvalidSpec` naming the offending path and the
+spec field to use instead.
+
+| Reserved path | Use instead |
+|---|---|
+| `metrics_backend`, `traces_backend`, `logs_backend` | not configurable — signals are always served from the embedded storage engine |
+| `profiles_backend` | `spec.signals.profiles` |
+| `storage.backend` | `spec.storage.backend` |
+| `storage.dir`, `storage.wal_dir` | `spec.storage.dir` |
+| `storage.s3` | `spec.storage.s3` |
+| `storage.cluster` (whole subtree) | `spec.cluster`, `spec.etcd.endpoints` |
+| `storage.flush_interval`, `storage.read_cache_bytes`, `storage.decode_cache_bytes`, `storage.decode_memory_bytes`, `storage.aggregate_stats` | `spec.engine` |
 
 ### Status
 

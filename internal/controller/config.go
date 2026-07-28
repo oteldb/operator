@@ -19,7 +19,6 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 
 	"sigs.k8s.io/yaml"
 
@@ -41,31 +40,31 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	// Every enabled signal is served from the embedded clustered storage engine; no ClickHouse.
 	// A disabled signal drops both its backend and its API bind, so the API is not served at all.
 	if metricsEnabled(cr) {
-		cfg["metrics_backend"] = valStorage
+		cfg[keyMetricsBackend] = valStorage
 		cfg["prometheus"] = map[string]any{keyBind: "0.0.0.0:9090"}
 	}
 	if tracesEnabled(cr) {
-		cfg["traces_backend"] = valStorage
+		cfg[keyTracesBackend] = valStorage
 		cfg["tempo"] = map[string]any{keyBind: "0.0.0.0:3200"}
 	}
 	if logsEnabled(cr) {
-		cfg["logs_backend"] = valStorage
+		cfg[keyLogsBackend] = valStorage
 		cfg["loki"] = map[string]any{keyBind: "0.0.0.0:3100"}
 	}
 	if profilesEnabled(cr) {
-		cfg["profiles_backend"] = valStorage
+		cfg[keyProfilesBackend] = valStorage
 		cfg["pyroscope"] = map[string]any{keyBind: "0.0.0.0:4040"}
 	}
 
 	storage := map[string]any{
-		"backend": string(backendOf(cr)),
-		"dir":     dirOf(cr),
+		keyBackend: string(backendOf(cr)),
+		keyDir:     dirOf(cr),
 	}
 
 	// The cluster block. Only the deployment-wide settings live here; id/addr/zone come from env.
 	cluster := map[string]any{
-		"etcd": etcdEndpoints,
-		"port": int(peerPortOf(cr)),
+		keyEtcd: etcdEndpoints,
+		keyPort: int(peerPortOf(cr)),
 	}
 	if rf := cr.Spec.Cluster.ReplicationFactor; rf != nil {
 		cluster["rf"] = int(*rf)
@@ -83,7 +82,7 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	if backendOf(cr) == dbv1alpha1.StorageBackendS3 {
 		s3 := cr.Spec.Storage.S3
 		if s3 == nil || s3.Bucket == "" {
-			return "", fmt.Errorf("storage.s3.bucket is required when storage.backend is s3")
+			return "", invalidSpec("spec.storage.s3.bucket is required when spec.storage.backend is s3")
 		}
 		m := map[string]any{
 			"bucket":           s3.Bucket,
@@ -122,13 +121,18 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 
 	cfg["storage"] = storage
 
-	// Merge user-supplied ExtraConfig over the generated config (top-level keys win).
+	// Merge user-supplied ExtraConfig over the generated config. The merge is recursive so that,
+	// say, storage.policy can be added without discarding the generated storage block; paths the
+	// operator owns are rejected rather than merged (see reservedConfigPaths).
 	if raw := cr.Spec.ExtraConfig; raw != nil && len(raw.Raw) > 0 {
 		var extra map[string]any
 		if err := json.Unmarshal(raw.Raw, &extra); err != nil {
-			return "", fmt.Errorf("parse extraConfig: %w", err)
+			return "", invalidSpec("parse spec.extraConfig: %s", err)
 		}
-		maps.Copy(cfg, extra)
+		if err := validateExtraConfig(extra); err != nil {
+			return "", err
+		}
+		deepMerge(cfg, extra)
 	}
 
 	out, err := yaml.Marshal(cfg)

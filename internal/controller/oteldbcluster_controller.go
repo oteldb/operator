@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -61,8 +62,15 @@ func (r *OtelDBClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if err := r.reconcile(ctx, cr); err != nil {
+		// An invalid spec cannot be fixed by retrying: report it and wait for the next spec change.
+		var invalid validationError
+		if errors.As(err, &invalid) {
+			log.Error(err, "Rejected invalid OtelDBCluster spec")
+			r.setDegraded(ctx, cr, "InvalidSpec", err)
+			return ctrl.Result{}, nil
+		}
 		log.Error(err, "reconcile failed")
-		r.setDegraded(ctx, cr, err)
+		r.setDegraded(ctx, cr, "ReconcileError", err)
 		return ctrl.Result{}, err
 	}
 
@@ -75,7 +83,7 @@ func (r *OtelDBClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 func (r *OtelDBClusterReconciler) reconcile(ctx context.Context, cr *dbv1alpha1.OtelDBCluster) error {
 	endpoints := cr.Spec.Etcd.Endpoints
 	if len(endpoints) == 0 {
-		return fmt.Errorf("spec.etcd.endpoints is required (bring your own etcd)")
+		return invalidSpec("spec.etcd.endpoints is required (bring your own etcd)")
 	}
 
 	cm, err := buildConfigMap(cr, endpoints)
@@ -182,9 +190,9 @@ func (r *OtelDBClusterReconciler) updateStatus(ctx context.Context, cr *dbv1alph
 	return r.Status().Update(ctx, cr)
 }
 
-func (r *OtelDBClusterReconciler) setDegraded(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, cause error) {
+func (r *OtelDBClusterReconciler) setDegraded(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, reason string, cause error) {
 	cr.Status.Phase = dbv1alpha1.PhaseDegraded
-	setCondition(cr, dbv1alpha1.ConditionDegraded, metav1.ConditionTrue, "ReconcileError", cause.Error())
+	setCondition(cr, dbv1alpha1.ConditionDegraded, metav1.ConditionTrue, reason, cause.Error())
 	_ = r.Status().Update(ctx, cr)
 }
 
