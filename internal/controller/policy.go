@@ -35,10 +35,10 @@ const (
 func renderPolicy(cr *dbv1alpha1.OtelDBCluster) map[string]any {
 	policy := map[string]any{}
 
-	if retention := renderRetention(cr.Spec.Retention); len(retention) > 0 {
+	if retention := renderRetention(cr.Spec.Policy.Retention); len(retention) > 0 {
 		policy[keyRetention] = retention
 	}
-	if limits := renderLimits(cr.Spec.Limits); len(limits) > 0 {
+	if limits := renderLimits(cr.Spec.Policy.Limits); len(limits) > 0 {
 		policy[keyLimits] = limits
 	}
 
@@ -83,19 +83,19 @@ func renderLimits(spec dbv1alpha1.LimitsSpec) map[string]any {
 // contradict each other. A negative quantity is always a mistake; the zero value is the documented
 // "unlimited", so it is left alone.
 func validatePolicy(cr *dbv1alpha1.OtelDBCluster) error {
-	retention := cr.Spec.Retention
+	retention := cr.Spec.Policy.Retention
 	if retention.MaxAge != nil && retention.MaxAge.Duration < 0 {
-		return invalidSpec("spec.retention.maxAge must not be negative, got %s", retention.MaxAge.Duration)
+		return invalidSpec("spec.policy.retention.maxAge must not be negative, got %s", retention.MaxAge.Duration)
 	}
-	limits := cr.Spec.Limits
+	limits := cr.Spec.Policy.Limits
 	for _, q := range []struct {
 		field string
 		value *resource.Quantity
 	}{
-		{"spec.retention.maxBytes", retention.MaxBytes},
-		{"spec.limits.ingestBytesPerSecond", limits.IngestBytesPerSecond},
-		{"spec.limits.maxInFlightBytes", limits.MaxInFlightBytes},
-		{"spec.limits.maxPartSize", limits.MaxPartSize},
+		{"spec.policy.retention.maxBytes", retention.MaxBytes},
+		{"spec.policy.limits.ingestBytesPerSecond", limits.IngestBytesPerSecond},
+		{"spec.policy.limits.maxInFlightBytes", limits.MaxInFlightBytes},
+		{"spec.policy.limits.maxPartSize", limits.MaxPartSize},
 	} {
 		if q.value != nil && q.value.Sign() < 0 {
 			return invalidSpec("%s must not be negative, got %s", q.field, q.value.String())
@@ -106,10 +106,10 @@ func validatePolicy(cr *dbv1alpha1.OtelDBCluster) error {
 	// overflow series the soft budget promises are never minted.
 	if limits.MaxSeriesSoft != nil && *limits.MaxSeriesSoft > 0 {
 		if limits.MaxSeries == nil || *limits.MaxSeries <= 0 {
-			return invalidSpec("spec.limits.maxSeriesSoft needs spec.limits.maxSeries to be set")
+			return invalidSpec("spec.policy.limits.maxSeriesSoft needs spec.policy.limits.maxSeries to be set")
 		}
 		if *limits.MaxSeriesSoft > *limits.MaxSeries {
-			return invalidSpec("spec.limits.maxSeriesSoft (%d) must not exceed spec.limits.maxSeries (%d)",
+			return invalidSpec("spec.policy.limits.maxSeriesSoft (%d) must not exceed spec.policy.limits.maxSeries (%d)",
 				*limits.MaxSeriesSoft, *limits.MaxSeries)
 		}
 	}

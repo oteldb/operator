@@ -36,19 +36,22 @@ spec:
     traces: true
     profiles: true
 
-  # Keep 30 days of data. Enforced at merge time by dropping whole partitions, so data can
-  # outlive the window until the partition holding it has fully expired.
-  retention:
-    maxAge: 720h
-    # maxBytes is accepted but not enforced by the storage engine yet (oteldb/storage#224).
+  # The per-tenant storage policy (oteldb's storage.policy). Needs an oteldb newer than v0.48.0 —
+  # older builds ignore these keys silently.
+  policy:
+    # Keep 30 days of data. Enforced at merge time by dropping whole partitions, so data can
+    # outlive the window until the partition holding it has fully expired.
+    retention:
+      maxAge: 720h
+      # maxBytes is accepted but not enforced by the storage engine yet (oteldb/storage#224).
 
-  # Per-node admission control: over-budget writes are shed and reported as OTLP partial
-  # success, so an overload degrades instead of OOMing.
-  limits:
-    maxSeries: 2000000
-    maxSeriesSoft: 1500000   # past this, new series fold into a per-metric overflow series
-    maxInFlightBytes: 1Gi
-    maxPartSize: 256Mi
+    # Per-node admission control: over-budget writes are shed and reported as OTLP partial
+    # success, so an overload degrades instead of OOMing.
+    limits:
+      maxSeries: 2000000
+      maxSeriesSoft: 1500000   # past this, new series fold into a per-metric overflow series
+      maxInFlightBytes: 1Gi
+      maxPartSize: 256Mi
 
   resources:
     requests:

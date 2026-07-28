@@ -48,8 +48,8 @@ var reservedConfigPaths = map[string]string{
 	"storage.aggregate_stats":     "use spec.engine.aggregateStats",
 
 	// The rest of storage.policy (precision, downsample, recompress) stays mergeable.
-	"storage.policy.retention": "use spec.retention",
-	"storage.policy.limits":    "use spec.limits",
+	"storage.policy.retention": "use spec.policy.retention",
+	"storage.policy.limits":    "use spec.policy.limits",
 }
 
 // validationError marks a spec problem that no amount of retrying can fix: the reconcile is

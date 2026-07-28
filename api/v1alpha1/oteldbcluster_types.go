@@ -78,13 +78,11 @@ type OtelDBClusterSpec struct {
 	// +optional
 	Engine EngineSpec `json:"engine,omitempty"`
 
-	// Retention bounds how long ingested data is kept. Empty retains forever.
+	// Policy is the per-tenant storage policy: retention and admission-control limits. It maps
+	// onto oteldb's storage.policy block. Empty leaves the engine at its defaults (retain
+	// forever, no limits).
 	// +optional
-	Retention RetentionSpec `json:"retention,omitempty"`
-
-	// Limits are the per-node admission-control limits. Empty means unlimited.
-	// +optional
-	Limits LimitsSpec `json:"limits,omitempty"`
+	Policy PolicySpec `json:"policy,omitempty"`
 
 	// Service configures the client-facing Service that exposes the query and ingest APIs.
 	// +optional
@@ -145,7 +143,7 @@ type OtelDBClusterSpec struct {
 	// below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
 	// storage.decode_memory_bytes, storage.aggregate_stats, storage.policy.retention and
 	// storage.policy.limits. Configure those through spec.storage, spec.cluster, spec.etcd,
-	// spec.signals, spec.engine, spec.retention and spec.limits. The rest of storage.policy
+	// spec.signals, spec.engine and spec.policy. The rest of storage.policy
 	// (precision, downsample, recompress) stays mergeable.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -332,6 +330,24 @@ type EngineSpec struct {
 	// without decoding. Defaults to the engine default (enabled).
 	// +optional
 	AggregateStats *bool `json:"aggregateStats,omitempty"`
+}
+
+// PolicySpec is the per-tenant storage policy, mapping 1:1 onto oteldb's storage.policy block.
+//
+// Retention and limits landed in oteldb's config after v0.48.0. Older builds ignore unknown config
+// keys silently, so against those this policy is accepted and does nothing — pin a newer Image
+// before relying on it.
+//
+// The merge-time policies oteldb also supports there — precision, downsample and recompress — are
+// not modelled yet (see oteldb/operator#3); they stay reachable through spec.extraConfig.
+type PolicySpec struct {
+	// Retention bounds how long ingested data is kept. Empty retains forever.
+	// +optional
+	Retention RetentionSpec `json:"retention,omitempty"`
+
+	// Limits are the per-node admission-control limits. Empty means unlimited.
+	// +optional
+	Limits LimitsSpec `json:"limits,omitempty"`
 }
 
 // RetentionSpec bounds how long data is kept. Enforcement happens at merge time and drops whole

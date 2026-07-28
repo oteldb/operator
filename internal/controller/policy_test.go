@@ -52,7 +52,7 @@ func TestRenderPolicyAbsentByDefault(t *testing.T) {
 
 func TestRenderPolicyRetention(t *testing.T) {
 	cr := testCluster()
-	cr.Spec.Retention = dbv1alpha1.RetentionSpec{
+	cr.Spec.Policy.Retention = dbv1alpha1.RetentionSpec{
 		MaxAge:   &metav1.Duration{Duration: 720 * time.Hour},
 		MaxBytes: ptr.To(resource.MustParse("500Gi")),
 	}
@@ -68,7 +68,7 @@ func TestRenderPolicyRetention(t *testing.T) {
 
 func TestRenderPolicyLimits(t *testing.T) {
 	cr := testCluster()
-	cr.Spec.Limits = dbv1alpha1.LimitsSpec{
+	cr.Spec.Policy.Limits = dbv1alpha1.LimitsSpec{
 		IngestBytesPerSecond: ptr.To(resource.MustParse("50Mi")),
 		MaxInFlightBytes:     ptr.To(resource.MustParse("1Gi")),
 		MaxSeries:            ptr.To[int64](1_000_000),
@@ -92,7 +92,7 @@ func TestRenderPolicyLimits(t *testing.T) {
 // (issue #1) did its damage.
 func TestRenderPolicyKeepsStorageBlock(t *testing.T) {
 	cr := testCluster()
-	cr.Spec.Retention.MaxAge = &metav1.Duration{Duration: time.Hour}
+	cr.Spec.Policy.Retention.MaxAge = &metav1.Duration{Duration: time.Hour}
 
 	storage := renderStorage(t, cr)
 	require.Equal(t, "file", storage["backend"])
@@ -102,7 +102,7 @@ func TestRenderPolicyKeepsStorageBlock(t *testing.T) {
 
 func TestRenderPolicyExtraConfigMergesSiblings(t *testing.T) {
 	cr := testCluster()
-	cr.Spec.Retention.MaxAge = &metav1.Duration{Duration: 24 * time.Hour}
+	cr.Spec.Policy.Retention.MaxAge = &metav1.Duration{Duration: 24 * time.Hour}
 	cr.Spec.ExtraConfig = &runtime.RawExtension{
 		Raw: []byte(`{"storage":{"policy":{"recompress":{"after":"72h","level":19}}}}`),
 	}
@@ -131,27 +131,27 @@ func TestValidatePolicy(t *testing.T) {
 		{
 			name:      "negative max age",
 			retention: dbv1alpha1.RetentionSpec{MaxAge: &metav1.Duration{Duration: -time.Hour}},
-			wantErr:   "spec.retention.maxAge must not be negative",
+			wantErr:   "spec.policy.retention.maxAge must not be negative",
 		},
 		{
 			name:      "negative max bytes",
 			retention: dbv1alpha1.RetentionSpec{MaxBytes: ptr.To(resource.MustParse("-1Gi"))},
-			wantErr:   "spec.retention.maxBytes must not be negative",
+			wantErr:   "spec.policy.retention.maxBytes must not be negative",
 		},
 		{
 			name:    "negative ingest rate",
 			limits:  dbv1alpha1.LimitsSpec{IngestBytesPerSecond: ptr.To(resource.MustParse("-1"))},
-			wantErr: "spec.limits.ingestBytesPerSecond must not be negative",
+			wantErr: "spec.policy.limits.ingestBytesPerSecond must not be negative",
 		},
 		{
 			name:    "negative max part size",
 			limits:  dbv1alpha1.LimitsSpec{MaxPartSize: ptr.To(resource.MustParse("-256Mi"))},
-			wantErr: "spec.limits.maxPartSize must not be negative",
+			wantErr: "spec.policy.limits.maxPartSize must not be negative",
 		},
 		{
 			name:    "soft budget without hard ceiling",
 			limits:  dbv1alpha1.LimitsSpec{MaxSeriesSoft: ptr.To[int64](1000)},
-			wantErr: "spec.limits.maxSeriesSoft needs spec.limits.maxSeries",
+			wantErr: "spec.policy.limits.maxSeriesSoft needs spec.policy.limits.maxSeries",
 		},
 		{
 			name: "soft budget above hard ceiling",
@@ -159,7 +159,7 @@ func TestValidatePolicy(t *testing.T) {
 				MaxSeries:     ptr.To[int64](1000),
 				MaxSeriesSoft: ptr.To[int64](2000),
 			},
-			wantErr: "must not exceed spec.limits.maxSeries",
+			wantErr: "must not exceed spec.policy.limits.maxSeries",
 		},
 		{
 			name: "soft budget equal to hard ceiling",
@@ -173,8 +173,8 @@ func TestValidatePolicy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cr := testCluster()
-			cr.Spec.Retention = tt.retention
-			cr.Spec.Limits = tt.limits
+			cr.Spec.Policy.Retention = tt.retention
+			cr.Spec.Policy.Limits = tt.limits
 
 			err := validatePolicy(cr)
 			if tt.wantErr == "" {
@@ -205,14 +205,14 @@ func TestValidateExtraConfigReservedPolicyPaths(t *testing.T) {
 			extra: map[string]any{"storage": map[string]any{
 				"policy": map[string]any{"retention": map[string]any{"max_age": "1h"}},
 			}},
-			wantErr: "storage.policy.retention (use spec.retention)",
+			wantErr: "storage.policy.retention (use spec.policy.retention)",
 		},
 		{
 			name: "limits is reserved",
 			extra: map[string]any{"storage": map[string]any{
 				"policy": map[string]any{"limits": map[string]any{"max_series": 10}},
 			}},
-			wantErr: "storage.policy.limits (use spec.limits)",
+			wantErr: "storage.policy.limits (use spec.policy.limits)",
 		},
 		{
 			name: "a key below a reserved path is reserved too",
