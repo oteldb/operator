@@ -73,6 +73,9 @@ for a fuller example including the S3 backend.
 | `cluster.staticZone` | Fixed failure-domain label for the cluster's nodes (ring zone-spreading). |
 | `signals` | Which signals to serve (all default on). Disabling one drops its backend, its API bind and its ports; disabling all is rejected. |
 | `engine` | Storage engine tuning: `flushInterval`, `readCacheSize`, `decodeCacheSize`, `decodeMemoryLimit`, `aggregateStats`. |
+| `retention.maxAge` | How long data is kept (e.g. `720h`). Empty retains forever. Enforced at merge time by dropping whole partitions, so data can outlive the window briefly. |
+| `retention.maxBytes` | Retained-bytes budget. **Accepted but not enforced yet** by the storage engine ([oteldb/storage#224](https://github.com/oteldb/storage/issues/224)) — use `maxAge` to bound disk growth. |
+| `limits` | Per-node admission control: `ingestBytesPerSecond`, `maxInFlightBytes`, `maxSeries`, `maxSeriesSoft`, `maxPartSize`. Over-budget writes are shed as OTLP partial success rather than buffered. |
 | `service.type` / `annotations` | Client Service exposing the query/ingest APIs. |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `podSecurityContext`, `securityContext`, `podAnnotations`, `podLabels`, `serviceAccountName` | Standard pod scheduling/security knobs. |
 | `extraConfig` | Arbitrary raw oteldb config **deep-merged** over the generated config — for fields the CRD does not model (auth, retention policy, prometheus tuning, …). Nested objects merge key by key (`storage.policy` does not wipe `storage.backend`); operator-owned paths are [reserved](#reserved-extraconfig-paths). |
@@ -101,6 +104,11 @@ spec field to use instead.
 | `storage.s3` | `spec.storage.s3` |
 | `storage.cluster` (whole subtree) | `spec.cluster`, `spec.etcd.endpoints` |
 | `storage.flush_interval`, `storage.read_cache_bytes`, `storage.decode_cache_bytes`, `storage.decode_memory_bytes`, `storage.aggregate_stats` | `spec.engine` |
+| `storage.policy.retention` | `spec.retention` |
+| `storage.policy.limits` | `spec.limits` |
+
+The rest of `storage.policy` — `precision`, `downsample`, `recompress` — is not modelled by the
+CRD and stays mergeable, as in the example above.
 
 ### Status
 
