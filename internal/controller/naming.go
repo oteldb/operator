@@ -51,6 +51,20 @@ const (
 	portPeer = 7946
 )
 
+// Port names, shared by the container ports, the Services and the probes.
+const (
+	portNameOTLPGRPC   = "otlp-grpc"
+	portNameOTLPHTTP   = "otlp-http"
+	portNamePromRW     = "prom-rw"
+	portNamePromHTTP   = "prom-http"
+	portNameTempoHTTP  = "tempo-http"
+	portNameLokiHTTP   = "loki-http"
+	portNamePyroscope  = "pyroscope"
+	portNameSelfMetric = "metrics"
+	portNameHealth     = "health-check"
+	portNamePeer       = "peer"
+)
+
 const (
 	configVolumeName = "config"
 	dataVolumeName   = "data"

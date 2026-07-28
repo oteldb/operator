@@ -70,7 +70,7 @@ type OtelDBClusterSpec struct {
 	Cluster ClusterSpec `json:"cluster,omitempty"`
 
 	// Signals selects which telemetry signals the cluster serves (all default to enabled and are
-	// served from the embedded clustered storage engine).
+	// served from the embedded clustered storage engine). Disabling every signal is rejected.
 	// +optional
 	Signals SignalsSpec `json:"signals,omitempty"`
 
@@ -263,17 +263,26 @@ type ClusterSpec struct {
 	StaticZone string `json:"staticZone,omitempty"`
 }
 
-// SignalsSpec selects which signals the cluster serves.
+// SignalsSpec selects which signals the cluster serves. Disabling a signal drops its backend and
+// its API bind from the rendered config, and its ports from the pods and the client Service. At
+// least one signal must stay enabled. Unset means enabled.
 type SignalsSpec struct {
+	// Metrics serves the Prometheus query API and remote-write ingest.
 	// +kubebuilder:default=true
 	// +optional
 	Metrics *bool `json:"metrics,omitempty"`
+
+	// Logs serves the Loki query API.
 	// +kubebuilder:default=true
 	// +optional
 	Logs *bool `json:"logs,omitempty"`
+
+	// Traces serves the Tempo query API.
 	// +kubebuilder:default=true
 	// +optional
 	Traces *bool `json:"traces,omitempty"`
+
+	// Profiles serves the Pyroscope query and ingest API.
 	// +kubebuilder:default=true
 	// +optional
 	Profiles *bool `json:"profiles,omitempty"`

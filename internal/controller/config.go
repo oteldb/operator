@@ -30,17 +30,28 @@ import (
 // zone) is intentionally omitted — it is injected per pod via environment variables so the whole
 // StatefulSet can share this single ConfigMap.
 func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string, error) {
-	cfg := map[string]any{
-		// Serve every signal from the embedded clustered storage engine; no ClickHouse.
-		"metrics_backend": valStorage,
-		"traces_backend":  valStorage,
-		"logs_backend":    valStorage,
-		"tempo":           map[string]any{keyBind: "0.0.0.0:3200"},
-		"prometheus":      map[string]any{keyBind: "0.0.0.0:9090"},
-		"loki":            map[string]any{keyBind: "0.0.0.0:3100"},
-		"health_check":    map[string]any{keyBind: "0.0.0.0:13133"},
+	if err := validateSignals(cr); err != nil {
+		return "", err
 	}
 
+	cfg := map[string]any{
+		"health_check": map[string]any{keyBind: "0.0.0.0:13133"},
+	}
+
+	// Every enabled signal is served from the embedded clustered storage engine; no ClickHouse.
+	// A disabled signal drops both its backend and its API bind, so the API is not served at all.
+	if metricsEnabled(cr) {
+		cfg["metrics_backend"] = valStorage
+		cfg["prometheus"] = map[string]any{keyBind: "0.0.0.0:9090"}
+	}
+	if tracesEnabled(cr) {
+		cfg["traces_backend"] = valStorage
+		cfg["tempo"] = map[string]any{keyBind: "0.0.0.0:3200"}
+	}
+	if logsEnabled(cr) {
+		cfg["logs_backend"] = valStorage
+		cfg["loki"] = map[string]any{keyBind: "0.0.0.0:3100"}
+	}
 	if profilesEnabled(cr) {
 		cfg["profiles_backend"] = valStorage
 		cfg["pyroscope"] = map[string]any{keyBind: "0.0.0.0:4040"}
@@ -125,13 +136,6 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 		return "", fmt.Errorf("marshal config: %w", err)
 	}
 	return string(out), nil
-}
-
-func profilesEnabled(cr *dbv1alpha1.OtelDBCluster) bool {
-	if p := cr.Spec.Signals.Profiles; p != nil {
-		return *p
-	}
-	return true // default on
 }
 
 func backendOf(cr *dbv1alpha1.OtelDBCluster) dbv1alpha1.StorageBackend {
