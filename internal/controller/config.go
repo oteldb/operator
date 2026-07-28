@@ -32,6 +32,9 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	if err := validateSignals(cr); err != nil {
 		return "", err
 	}
+	if err := validatePolicy(cr); err != nil {
+		return "", err
+	}
 
 	cfg := map[string]any{
 		"health_check": map[string]any{keyBind: "0.0.0.0:13133"},
@@ -117,6 +120,11 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	}
 	if eng.AggregateStats != nil {
 		storage["aggregate_stats"] = *eng.AggregateStats
+	}
+
+	// Retention and admission-control limits ride the per-tenant storage policy.
+	if policy := renderPolicy(cr); policy != nil {
+		storage[keyPolicy] = policy
 	}
 
 	cfg["storage"] = storage
