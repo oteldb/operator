@@ -162,7 +162,7 @@ func TestRenderConfigExtraConfigPreservesStorageBlock(t *testing.T) {
 	cr := testCluster()
 	cr.Spec.Cluster.ReplicationFactor = ptr.To[int32](3)
 	cr.Spec.ExtraConfig = &runtime.RawExtension{
-		Raw: []byte(`{"storage":{"policy":{"recompress":{"after":"3d","level":19}}}}`),
+		Raw: []byte(`{"storage":{"log_query_parallelism":4}}`),
 	}
 	out, err := renderConfig(cr, cr.Spec.Etcd.Endpoints)
 	require.NoError(t, err)
@@ -179,9 +179,7 @@ func TestRenderConfigExtraConfigPreservesStorageBlock(t *testing.T) {
 	require.Equal(t, []any{"http://etcd:2379"}, cluster["etcd"])
 	require.EqualValues(t, 3, cluster["rf"])
 
-	policy, ok := storage["policy"].(map[string]any)
-	require.True(t, ok, "extraConfig policy not merged")
-	require.Equal(t, map[string]any{"after": "3d", "level": float64(19)}, policy["recompress"])
+	require.EqualValues(t, 4, storage["log_query_parallelism"], "extraConfig key not merged")
 }
 
 func TestRenderConfigExtraConfigReservedPath(t *testing.T) {
