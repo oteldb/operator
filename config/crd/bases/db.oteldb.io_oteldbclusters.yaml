@@ -1639,19 +1639,24 @@ spec:
               signals:
                 description: |-
                   Signals selects which telemetry signals the cluster serves (all default to enabled and are
-                  served from the embedded clustered storage engine).
+                  served from the embedded clustered storage engine). Disabling every signal is rejected.
                 properties:
                   logs:
                     default: true
+                    description: Logs serves the Loki query API.
                     type: boolean
                   metrics:
                     default: true
+                    description: Metrics serves the Prometheus query API and remote-write
+                      ingest.
                     type: boolean
                   profiles:
                     default: true
+                    description: Profiles serves the Pyroscope query and ingest API.
                     type: boolean
                   traces:
                     default: true
+                    description: Traces serves the Tempo query API.
                     type: boolean
                 type: object
               storage:
