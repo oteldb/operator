@@ -1078,8 +1078,10 @@ spec:
                   instead of being merged: metrics_backend, traces_backend, logs_backend, profiles_backend,
                   storage.backend, storage.dir, storage.wal_dir, storage.s3, storage.cluster (and everything
                   below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
-                  storage.decode_memory_bytes and storage.aggregate_stats. Configure those through
-                  spec.storage, spec.cluster, spec.etcd, spec.signals and spec.engine.
+                  storage.decode_memory_bytes, storage.aggregate_stats, storage.policy.retention and
+                  storage.policy.limits. Configure those through spec.storage, spec.cluster, spec.etcd,
+                  spec.signals, spec.engine, spec.retention and spec.limits. The rest of storage.policy
+                  (precision, downsample, recompress) stays mergeable.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               image:
@@ -1113,6 +1115,52 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              limits:
+                description: Limits are the per-node admission-control limits. Empty
+                  means unlimited.
+                properties:
+                  ingestBytesPerSecond:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: IngestBytesPerSecond caps the ingest rate, bursting
+                      to one second of budget.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maxInFlightBytes:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: MaxInFlightBytes caps the unflushed in-flight bytes
+                      buffered before backpressure sheds.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maxPartSize:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MaxPartSize caps an immutable part's approximate uncompressed size; flush and merge split
+                      their output to respect it. It is structural: fixed when a node's engine is first created,
+                      so changing it does not affect existing data.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  maxSeries:
+                    description: |-
+                      MaxSeries is the hard active-series ceiling: a sample minting a new series past it is shed.
+                      Existing series are unaffected.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  maxSeriesSoft:
+                    description: |-
+                      MaxSeriesSoft is a soft cardinality budget (metrics only): past it a new series' samples go
+                      to a synthetic per-metric overflow series instead of being shed, until MaxSeries is reached.
+                      It must not exceed MaxSeries, and needs MaxSeries set to have any effect.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                type: object
               logLevel:
                 description: LogLevel sets OTEL_LOG_LEVEL for the oteldb process (e.g.
                   DEBUG, INFO, WARN, ERROR).
@@ -1432,6 +1480,26 @@ spec:
                       otherwise to an implementation-defined value. Requests cannot exceed Limits.
                       More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                     type: object
+                type: object
+              retention:
+                description: Retention bounds how long ingested data is kept. Empty
+                  retains forever.
+                properties:
+                  maxAge:
+                    description: MaxAge is the maximum age of retained data (e.g.
+                      "720h"). Empty retains forever.
+                    type: string
+                  maxBytes:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MaxBytes is the total retained-bytes budget across every signal on a node.
+
+                      oteldb accepts it, but the storage engine does not enforce it yet (oteldb/storage#224), so
+                      setting it alone bounds nothing today. Use MaxAge to bound disk growth.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                 type: object
               securityContext:
                 description: SecurityContext for the oteldb container.
