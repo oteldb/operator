@@ -53,6 +53,20 @@ spec:
       maxInFlightBytes: 1Gi
       maxPartSize: 256Mi
 
+    # Merge-time coarsening of old data. These rewrite parts in place and CANNOT be undone —
+    # lowering an `after` re-processes existing data at the next merge.
+    downsample:
+      - {after: 24h,  interval: 5m}    # samples older than a day: one point per 5m bucket
+      - {after: 168h, interval: 1h, agg: avg}
+    precision:
+      - {after: 168h, bits: 32}        # a week old: half the mantissa
+      - {after: 336h, bits: 16}
+
+    # Lossless and decode-transparent: costs merge CPU, saves storage.
+    recompress:
+      after: 72h
+      level: 19
+
   resources:
     requests:
       cpu: "1"
