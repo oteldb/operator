@@ -1070,7 +1070,7 @@ spec:
                 description: |-
                   ExtraConfig is arbitrary additional oteldb config deeply merged over the generated config, as
                   a top-level YAML/JSON object. Use it to set fields the CRD does not model directly (auth,
-                  prometheus tuning, retention policy, ...). Nested objects are merged key by key, so
+                  prometheus tuning, ...). Nested objects are merged key by key, so
                   storage.policy can be added without discarding the generated storage block; any other value
                   overrides the generated one.
 
@@ -1078,10 +1078,9 @@ spec:
                   instead of being merged: metrics_backend, traces_backend, logs_backend, profiles_backend,
                   storage.backend, storage.dir, storage.wal_dir, storage.s3, storage.cluster (and everything
                   below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
-                  storage.decode_memory_bytes, storage.aggregate_stats, storage.policy.retention and
-                  storage.policy.limits. Configure those through spec.storage, spec.cluster, spec.etcd,
-                  spec.signals, spec.engine and spec.policy. The rest of storage.policy
-                  (precision, downsample, recompress) stays mergeable.
+                  storage.decode_memory_bytes, storage.aggregate_stats and storage.policy (modelled in full, so
+                  the whole block is reserved). Configure those through spec.storage, spec.cluster, spec.etcd,
+                  spec.signals, spec.engine and spec.policy.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               image:
@@ -1369,10 +1368,50 @@ spec:
                 type: object
               policy:
                 description: |-
-                  Policy is the per-tenant storage policy: retention and admission-control limits. It maps
-                  onto oteldb's storage.policy block. Empty leaves the engine at its defaults (retain
-                  forever, no limits).
+                  Policy is the per-tenant storage policy: retention, admission-control limits, and the
+                  merge-time downsample/precision/recompress tiers. It maps onto oteldb's storage.policy
+                  block. Empty leaves the engine at its defaults (retain forever, no limits, lossless, raw).
                 properties:
+                  downsample:
+                    description: |-
+                      Downsample is the age-tiered merge-time rollup: samples older than a tier's After are
+                      replaced by one representative per Interval-wide bucket. Empty keeps data raw.
+
+                      This rewrites data in place and cannot be undone: lowering a tier's After re-processes
+                      existing parts at the next merge, and the replaced samples are gone.
+                    items:
+                      description: |-
+                        DownsampleTierSpec is one age band of the downsampling policy. Tiers are order-independent: a
+                        sample is rolled up by the coarsest tier whose After it has exceeded, and samples younger than
+                        every tier stay raw. Buckets align to absolute multiples of Interval, so repeated merges are
+                        stable.
+                      properties:
+                        after:
+                          description: After is the age past which this tier applies,
+                            relative to merge time (e.g. "24h").
+                          type: string
+                        agg:
+                          description: Agg combines the samples in a bucket. Defaults
+                            to "last".
+                          enum:
+                          - last
+                          - first
+                          - min
+                          - max
+                          - sum
+                          - avg
+                          - count
+                          type: string
+                        interval:
+                          description: Interval is the rollup bucket width (e.g. "5m").
+                            It must be positive.
+                          type: string
+                      required:
+                      - after
+                      - interval
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
                   limits:
                     description: Limits are the per-node admission-control limits.
                       Empty means unlimited.
@@ -1418,6 +1457,59 @@ spec:
                         format: int64
                         minimum: 0
                         type: integer
+                    type: object
+                  precision:
+                    description: |-
+                      Precision is the age-tiered lossy float-compression policy: the value column of parts older
+                      than a tier's After is re-encoded to keep only Bits mantissa bits. Empty stays lossless.
+
+                      This rewrites data in place and cannot be undone: discarded mantissa bits are not
+                      recoverable, and lowering a tier's After re-processes existing parts at the next merge.
+                    items:
+                      description: |-
+                        PrecisionTierSpec is one age band of the lossy float-precision policy. Tiers are
+                        order-independent: a part takes the most aggressive tier whose After it has exceeded. The
+                        encoder keeps whichever of the lossy and lossless encodings is smaller, so a tier can only help
+                        size.
+                      properties:
+                        after:
+                          description: After is the age past which this tier applies,
+                            relative to merge time (e.g. "168h").
+                          type: string
+                        bits:
+                          description: |-
+                            Bits is the number of significant mantissa bits retained. Fewer bits compress better and
+                            lose more accuracy.
+                          format: int32
+                          maximum: 63
+                          minimum: 1
+                          type: integer
+                      required:
+                      - after
+                      - bits
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  recompress:
+                    description: |-
+                      Recompress rewrites fully-cold parts with a higher-ratio Zstandard profile at merge, trading
+                      merge CPU for storage. It is decode-transparent and lossless. Nil disables it.
+                    properties:
+                      after:
+                        description: |-
+                          After is the age past which a fully-cold part is recompressed at merge. It must be positive
+                          — the block exists only to enable recompression.
+                        type: string
+                      level:
+                        description: |-
+                          Level is the Zstandard level: 1 is fastest, 19 is the best ratio. Empty uses the best-ratio
+                          default.
+                        format: int32
+                        maximum: 19
+                        minimum: 1
+                        type: integer
+                    required:
+                    - after
                     type: object
                   retention:
                     description: Retention bounds how long ingested data is kept.
