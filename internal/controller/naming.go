@@ -36,6 +36,19 @@ const (
 	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
 )
 
+// oteldb config keys shared by the renderer and the reserved-path guard.
+const (
+	keyMetricsBackend  = "metrics_backend"
+	keyTracesBackend   = "traces_backend"
+	keyLogsBackend     = "logs_backend"
+	keyProfilesBackend = "profiles_backend"
+
+	keyBackend = "backend"
+	keyDir     = "dir"
+	keyEtcd    = "etcd"
+	keyPort    = "port"
+)
+
 // Container ports exposed by every oteldb node. Names must be <= 15 chars (k8s port-name limit).
 const (
 	portOTLPGRPC   = 4317

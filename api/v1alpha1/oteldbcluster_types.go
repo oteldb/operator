@@ -125,9 +125,18 @@ type OtelDBClusterSpec struct {
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
-	// ExtraConfig is arbitrary additional oteldb config merged over the generated config, as a
-	// top-level YAML/JSON object. Use it to set fields the CRD does not model directly (auth,
-	// prometheus tuning, retention policy, ...). Keys here override generated ones.
+	// ExtraConfig is arbitrary additional oteldb config deeply merged over the generated config, as
+	// a top-level YAML/JSON object. Use it to set fields the CRD does not model directly (auth,
+	// prometheus tuning, retention policy, ...). Nested objects are merged key by key, so
+	// storage.policy can be added without discarding the generated storage block; any other value
+	// overrides the generated one.
+	//
+	// The paths the operator owns are reserved and rejected with a Degraded/InvalidSpec condition
+	// instead of being merged: metrics_backend, traces_backend, logs_backend, profiles_backend,
+	// storage.backend, storage.dir, storage.wal_dir, storage.s3, storage.cluster (and everything
+	// below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
+	// storage.decode_memory_bytes and storage.aggregate_stats. Configure those through
+	// spec.storage, spec.cluster, spec.etcd, spec.signals and spec.engine.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
