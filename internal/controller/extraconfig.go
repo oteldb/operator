@@ -46,6 +46,10 @@ var reservedConfigPaths = map[string]string{
 	"storage.decode_cache_bytes":  "use spec.engine.decodeCacheSize",
 	"storage.decode_memory_bytes": "use spec.engine.decodeMemoryLimit",
 	"storage.aggregate_stats":     "use spec.engine.aggregateStats",
+
+	// The rest of storage.policy (precision, downsample, recompress) stays mergeable.
+	"storage.policy.retention": "use spec.retention",
+	"storage.policy.limits":    "use spec.limits",
 }
 
 // validationError marks a spec problem that no amount of retrying can fix: the reconcile is

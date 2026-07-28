@@ -78,6 +78,14 @@ type OtelDBClusterSpec struct {
 	// +optional
 	Engine EngineSpec `json:"engine,omitempty"`
 
+	// Retention bounds how long ingested data is kept. Empty retains forever.
+	// +optional
+	Retention RetentionSpec `json:"retention,omitempty"`
+
+	// Limits are the per-node admission-control limits. Empty means unlimited.
+	// +optional
+	Limits LimitsSpec `json:"limits,omitempty"`
+
 	// Service configures the client-facing Service that exposes the query and ingest APIs.
 	// +optional
 	Service ServiceSpec `json:"service,omitempty"`
@@ -135,8 +143,10 @@ type OtelDBClusterSpec struct {
 	// instead of being merged: metrics_backend, traces_backend, logs_backend, profiles_backend,
 	// storage.backend, storage.dir, storage.wal_dir, storage.s3, storage.cluster (and everything
 	// below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
-	// storage.decode_memory_bytes and storage.aggregate_stats. Configure those through
-	// spec.storage, spec.cluster, spec.etcd, spec.signals and spec.engine.
+	// storage.decode_memory_bytes, storage.aggregate_stats, storage.policy.retention and
+	// storage.policy.limits. Configure those through spec.storage, spec.cluster, spec.etcd,
+	// spec.signals, spec.engine, spec.retention and spec.limits. The rest of storage.policy
+	// (precision, downsample, recompress) stays mergeable.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
@@ -322,6 +332,53 @@ type EngineSpec struct {
 	// without decoding. Defaults to the engine default (enabled).
 	// +optional
 	AggregateStats *bool `json:"aggregateStats,omitempty"`
+}
+
+// RetentionSpec bounds how long data is kept. Enforcement happens at merge time and drops whole
+// partitions — never individual rows — so data can outlive the window until the partition holding
+// it has fully expired.
+type RetentionSpec struct {
+	// MaxAge is the maximum age of retained data (e.g. "720h"). Empty retains forever.
+	// +optional
+	MaxAge *metav1.Duration `json:"maxAge,omitempty"`
+
+	// MaxBytes is the total retained-bytes budget across every signal on a node.
+	//
+	// oteldb accepts it, but the storage engine does not enforce it yet (oteldb/storage#224), so
+	// setting it alone bounds nothing today. Use MaxAge to bound disk growth.
+	// +optional
+	MaxBytes *resource.Quantity `json:"maxBytes,omitempty"`
+}
+
+// LimitsSpec are the per-node admission-control limits. They shed over-budget writes and report
+// them as OTLP partial success (RESOURCE_EXHAUSTED), so an overload degrades rather than OOMs.
+type LimitsSpec struct {
+	// IngestBytesPerSecond caps the ingest rate, bursting to one second of budget.
+	// +optional
+	IngestBytesPerSecond *resource.Quantity `json:"ingestBytesPerSecond,omitempty"`
+
+	// MaxInFlightBytes caps the unflushed in-flight bytes buffered before backpressure sheds.
+	// +optional
+	MaxInFlightBytes *resource.Quantity `json:"maxInFlightBytes,omitempty"`
+
+	// MaxSeries is the hard active-series ceiling: a sample minting a new series past it is shed.
+	// Existing series are unaffected.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxSeries *int64 `json:"maxSeries,omitempty"`
+
+	// MaxSeriesSoft is a soft cardinality budget (metrics only): past it a new series' samples go
+	// to a synthetic per-metric overflow series instead of being shed, until MaxSeries is reached.
+	// It must not exceed MaxSeries, and needs MaxSeries set to have any effect.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxSeriesSoft *int64 `json:"maxSeriesSoft,omitempty"`
+
+	// MaxPartSize caps an immutable part's approximate uncompressed size; flush and merge split
+	// their output to respect it. It is structural: fixed when a node's engine is first created,
+	// so changing it does not affect existing data.
+	// +optional
+	MaxPartSize *resource.Quantity `json:"maxPartSize,omitempty"`
 }
 
 // ServiceSpec configures the client-facing Service.
