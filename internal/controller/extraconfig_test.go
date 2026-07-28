@@ -112,7 +112,7 @@ func TestValidateExtraConfig(t *testing.T) {
 		},
 		{
 			name:  "non-reserved storage key",
-			extra: map[string]any{"storage": map[string]any{"policy": map[string]any{"recompress": "3d"}}},
+			extra: map[string]any{"storage": map[string]any{"log_query_parallelism": 4}},
 		},
 		{
 			name:    "storage backend",

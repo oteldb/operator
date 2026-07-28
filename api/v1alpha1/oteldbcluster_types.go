@@ -78,13 +78,11 @@ type OtelDBClusterSpec struct {
 	// +optional
 	Engine EngineSpec `json:"engine,omitempty"`
 
-	// Retention bounds how long ingested data is kept. Empty retains forever.
+	// Policy is the per-tenant storage policy: retention, admission-control limits, and the
+	// merge-time downsample/precision/recompress tiers. It maps onto oteldb's storage.policy
+	// block. Empty leaves the engine at its defaults (retain forever, no limits, lossless, raw).
 	// +optional
-	Retention RetentionSpec `json:"retention,omitempty"`
-
-	// Limits are the per-node admission-control limits. Empty means unlimited.
-	// +optional
-	Limits LimitsSpec `json:"limits,omitempty"`
+	Policy PolicySpec `json:"policy,omitempty"`
 
 	// Service configures the client-facing Service that exposes the query and ingest APIs.
 	// +optional
@@ -135,7 +133,7 @@ type OtelDBClusterSpec struct {
 
 	// ExtraConfig is arbitrary additional oteldb config deeply merged over the generated config, as
 	// a top-level YAML/JSON object. Use it to set fields the CRD does not model directly (auth,
-	// prometheus tuning, retention policy, ...). Nested objects are merged key by key, so
+	// prometheus tuning, ...). Nested objects are merged key by key, so
 	// storage.policy can be added without discarding the generated storage block; any other value
 	// overrides the generated one.
 	//
@@ -143,10 +141,9 @@ type OtelDBClusterSpec struct {
 	// instead of being merged: metrics_backend, traces_backend, logs_backend, profiles_backend,
 	// storage.backend, storage.dir, storage.wal_dir, storage.s3, storage.cluster (and everything
 	// below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
-	// storage.decode_memory_bytes, storage.aggregate_stats, storage.policy.retention and
-	// storage.policy.limits. Configure those through spec.storage, spec.cluster, spec.etcd,
-	// spec.signals, spec.engine, spec.retention and spec.limits. The rest of storage.policy
-	// (precision, downsample, recompress) stays mergeable.
+	// storage.decode_memory_bytes, storage.aggregate_stats and storage.policy (modelled in full, so
+	// the whole block is reserved). Configure those through spec.storage, spec.cluster, spec.etcd,
+	// spec.signals, spec.engine and spec.policy.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
@@ -332,6 +329,95 @@ type EngineSpec struct {
 	// without decoding. Defaults to the engine default (enabled).
 	// +optional
 	AggregateStats *bool `json:"aggregateStats,omitempty"`
+}
+
+// PolicySpec is the per-tenant storage policy, mapping 1:1 onto oteldb's storage.policy block.
+//
+// Downsample, Precision and Recompress work against oteldb v0.48.0. Retention and Limits landed in
+// oteldb's config after it; older builds ignore unknown config keys silently, so against those
+// those two are accepted and do nothing — pin a newer Image before relying on them.
+type PolicySpec struct {
+	// Retention bounds how long ingested data is kept. Empty retains forever.
+	// +optional
+	Retention RetentionSpec `json:"retention,omitempty"`
+
+	// Limits are the per-node admission-control limits. Empty means unlimited.
+	// +optional
+	Limits LimitsSpec `json:"limits,omitempty"`
+
+	// Downsample is the age-tiered merge-time rollup: samples older than a tier's After are
+	// replaced by one representative per Interval-wide bucket. Empty keeps data raw.
+	//
+	// This rewrites data in place and cannot be undone: lowering a tier's After re-processes
+	// existing parts at the next merge, and the replaced samples are gone.
+	// +optional
+	// +listType=atomic
+	Downsample []DownsampleTierSpec `json:"downsample,omitempty"`
+
+	// Precision is the age-tiered lossy float-compression policy: the value column of parts older
+	// than a tier's After is re-encoded to keep only Bits mantissa bits. Empty stays lossless.
+	//
+	// This rewrites data in place and cannot be undone: discarded mantissa bits are not
+	// recoverable, and lowering a tier's After re-processes existing parts at the next merge.
+	// +optional
+	// +listType=atomic
+	Precision []PrecisionTierSpec `json:"precision,omitempty"`
+
+	// Recompress rewrites fully-cold parts with a higher-ratio Zstandard profile at merge, trading
+	// merge CPU for storage. It is decode-transparent and lossless. Nil disables it.
+	// +optional
+	Recompress *RecompressSpec `json:"recompress,omitempty"`
+}
+
+// DownsampleTierSpec is one age band of the downsampling policy. Tiers are order-independent: a
+// sample is rolled up by the coarsest tier whose After it has exceeded, and samples younger than
+// every tier stay raw. Buckets align to absolute multiples of Interval, so repeated merges are
+// stable.
+type DownsampleTierSpec struct {
+	// After is the age past which this tier applies, relative to merge time (e.g. "24h").
+	// +required
+	After metav1.Duration `json:"after"`
+
+	// Interval is the rollup bucket width (e.g. "5m"). It must be positive.
+	// +required
+	Interval metav1.Duration `json:"interval"`
+
+	// Agg combines the samples in a bucket. Defaults to "last".
+	// +kubebuilder:validation:Enum=last;first;min;max;sum;avg;count
+	// +optional
+	Agg string `json:"agg,omitempty"`
+}
+
+// PrecisionTierSpec is one age band of the lossy float-precision policy. Tiers are
+// order-independent: a part takes the most aggressive tier whose After it has exceeded. The
+// encoder keeps whichever of the lossy and lossless encodings is smaller, so a tier can only help
+// size.
+type PrecisionTierSpec struct {
+	// After is the age past which this tier applies, relative to merge time (e.g. "168h").
+	// +required
+	After metav1.Duration `json:"after"`
+
+	// Bits is the number of significant mantissa bits retained. Fewer bits compress better and
+	// lose more accuracy.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=63
+	// +required
+	Bits int32 `json:"bits"`
+}
+
+// RecompressSpec configures cold-part recompression.
+type RecompressSpec struct {
+	// After is the age past which a fully-cold part is recompressed at merge. It must be positive
+	// — the block exists only to enable recompression.
+	// +required
+	After metav1.Duration `json:"after"`
+
+	// Level is the Zstandard level: 1 is fastest, 19 is the best ratio. Empty uses the best-ratio
+	// default.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=19
+	// +optional
+	Level *int32 `json:"level,omitempty"`
 }
 
 // RetentionSpec bounds how long data is kept. Enforcement happens at merge time and drops whole

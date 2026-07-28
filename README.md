@@ -73,12 +73,21 @@ for a fuller example including the S3 backend.
 | `cluster.staticZone` | Fixed failure-domain label for the cluster's nodes (ring zone-spreading). |
 | `signals` | Which signals to serve (all default on). Disabling one drops its backend, its API bind and its ports; disabling all is rejected. |
 | `engine` | Storage engine tuning: `flushInterval`, `readCacheSize`, `decodeCacheSize`, `decodeMemoryLimit`, `aggregateStats`. |
-| `retention.maxAge` | How long data is kept (e.g. `720h`). Empty retains forever. Enforced at merge time by dropping whole partitions, so data can outlive the window briefly. |
-| `retention.maxBytes` | Retained-bytes budget. **Accepted but not enforced yet** by the storage engine ([oteldb/storage#224](https://github.com/oteldb/storage/issues/224)) — use `maxAge` to bound disk growth. |
-| `limits` | Per-node admission control: `ingestBytesPerSecond`, `maxInFlightBytes`, `maxSeries`, `maxSeriesSoft`, `maxPartSize`. Over-budget writes are shed as OTLP partial success rather than buffered. |
+| `policy.retention.maxAge` | How long data is kept (e.g. `720h`). Empty retains forever. Enforced at merge time by dropping whole partitions, so data can outlive the window briefly. |
+| `policy.retention.maxBytes` | Retained-bytes budget. **Accepted but not enforced yet** by the storage engine ([oteldb/storage#224](https://github.com/oteldb/storage/issues/224)) — use `maxAge` to bound disk growth. |
+| `policy.limits` | Per-node admission control: `ingestBytesPerSecond`, `maxInFlightBytes`, `maxSeries`, `maxSeriesSoft`, `maxPartSize`. Over-budget writes are shed as OTLP partial success rather than buffered. |
+| `policy.downsample[]` | Merge-time age-tiered rollup: `{after, interval, agg}`. Samples past `after` collapse to one per `interval` bucket. **Lossy and irreversible.** |
+| `policy.precision[]` | Age-tiered lossy float precision: `{after, bits}`. Parts past `after` keep only `bits` mantissa bits. **Lossy and irreversible.** |
+| `policy.recompress` | `{after, level}`. Rewrites fully-cold parts with a higher-ratio Zstandard profile. Decode-transparent and lossless. |
 | `service.type` / `annotations` | Client Service exposing the query/ingest APIs. |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `podSecurityContext`, `securityContext`, `podAnnotations`, `podLabels`, `serviceAccountName` | Standard pod scheduling/security knobs. |
-| `extraConfig` | Arbitrary raw oteldb config **deep-merged** over the generated config — for fields the CRD does not model (auth, retention policy, prometheus tuning, …). Nested objects merge key by key (`storage.policy` does not wipe `storage.backend`); operator-owned paths are [reserved](#reserved-extraconfig-paths). |
+| `extraConfig` | Arbitrary raw oteldb config **deep-merged** over the generated config — for fields the CRD does not model (auth, prometheus tuning, …). Nested objects merge key by key (`storage.policy` does not wipe `storage.backend`); operator-owned paths are [reserved](#reserved-extraconfig-paths). |
+
+> `spec.policy` maps onto oteldb's `storage.policy`. `downsample`, `precision` and `recompress`
+> work against oteldb v0.48.0; `retention` and `limits` landed upstream **after** it. Older oteldb
+> builds — including the operator's current default image — ignore unknown config keys silently,
+> so on those the two newer blocks are accepted by the API server and have no effect. Pin a newer
+> `spec.image` before relying on them.
 
 ### Reserved `extraConfig` paths
 
@@ -86,9 +95,8 @@ for a fuller example including the S3 backend.
 
 ```yaml
 extraConfig:
-  storage:
-    policy:
-      recompress: {after: 3d, level: 19}   # keeps backend/dir/cluster
+  auth:
+    tenant_header: X-Scope-OrgID   # merged in; keeps backend/dir/cluster
 ```
 
 The paths the operator renders from the spec are **reserved**: an `extraConfig` that sets one is
@@ -104,11 +112,9 @@ spec field to use instead.
 | `storage.s3` | `spec.storage.s3` |
 | `storage.cluster` (whole subtree) | `spec.cluster`, `spec.etcd.endpoints` |
 | `storage.flush_interval`, `storage.read_cache_bytes`, `storage.decode_cache_bytes`, `storage.decode_memory_bytes`, `storage.aggregate_stats` | `spec.engine` |
-| `storage.policy.retention` | `spec.retention` |
-| `storage.policy.limits` | `spec.limits` |
+| `storage.policy.retention`, `storage.policy.limits`, `storage.policy.downsample`, `storage.policy.precision`, `storage.policy.recompress` | `spec.policy` |
 
-The rest of `storage.policy` — `precision`, `downsample`, `recompress` — is not modelled by the
-CRD and stays mergeable, as in the example above.
+`storage.policy` is now modelled in full, so the whole block is reserved.
 
 ### Status
 
