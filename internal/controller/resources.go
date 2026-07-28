@@ -36,19 +36,32 @@ type namedPort struct {
 	port int32
 }
 
-// apiPorts are the client-facing API ports served by every node.
-func apiPorts() []namedPort {
-	return []namedPort{
-		{"otlp-grpc", portOTLPGRPC},
-		{"otlp-http", portOTLPHTTP},
-		{"prom-rw", portPromRW},
-		{"prom-http", portPromHTTP},
-		{"tempo-http", portTempoHTTP},
-		{"loki-http", portLokiHTTP},
-		{"pyroscope", portPyroscope},
-		{"metrics", portSelfMetric},
-		{"health-check", portHealth},
+// apiPorts are the client-facing API ports served by every node. Ports belonging to a disabled
+// signal are omitted; OTLP ingest, self-metrics and the health check are always exposed.
+func apiPorts(cr *dbv1alpha1.OtelDBCluster) []namedPort {
+	ports := []namedPort{
+		{portNameOTLPGRPC, portOTLPGRPC},
+		{portNameOTLPHTTP, portOTLPHTTP},
 	}
+	if metricsEnabled(cr) {
+		ports = append(ports,
+			namedPort{portNamePromRW, portPromRW},
+			namedPort{portNamePromHTTP, portPromHTTP},
+		)
+	}
+	if tracesEnabled(cr) {
+		ports = append(ports, namedPort{portNameTempoHTTP, portTempoHTTP})
+	}
+	if logsEnabled(cr) {
+		ports = append(ports, namedPort{portNameLokiHTTP, portLokiHTTP})
+	}
+	if profilesEnabled(cr) {
+		ports = append(ports, namedPort{portNamePyroscope, portPyroscope})
+	}
+	return append(ports,
+		namedPort{portNameSelfMetric, portSelfMetric},
+		namedPort{portNameHealth, portHealth},
+	)
 }
 
 // buildConfigMap renders the shared oteldb config into a ConfigMap.
@@ -83,7 +96,7 @@ func buildPeerService(cr *dbv1alpha1.OtelDBCluster) *corev1.Service {
 			PublishNotReadyAddresses: true, // peers must resolve each other before readiness
 			Selector:                 selectorLabels(cr),
 			Ports: []corev1.ServicePort{{
-				Name:       "peer",
+				Name:       portNamePeer,
 				Port:       peerPortOf(cr),
 				TargetPort: intstr.FromInt32(peerPortOf(cr)),
 				Protocol:   corev1.ProtocolTCP,
@@ -99,8 +112,9 @@ func buildClientService(cr *dbv1alpha1.OtelDBCluster) *corev1.Service {
 	if svcType == "" {
 		svcType = corev1.ServiceTypeClusterIP
 	}
-	ports := make([]corev1.ServicePort, 0, len(apiPorts()))
-	for _, p := range apiPorts() {
+	api := apiPorts(cr)
+	ports := make([]corev1.ServicePort, 0, len(api))
+	for _, p := range api {
 		ports = append(ports, corev1.ServicePort{
 			Name:       p.name,
 			Port:       p.port,
@@ -247,18 +261,19 @@ func podEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
 }
 
 func containerPorts(cr *dbv1alpha1.OtelDBCluster) []corev1.ContainerPort {
-	ports := make([]corev1.ContainerPort, 0, len(apiPorts())+1)
-	for _, p := range apiPorts() {
+	api := apiPorts(cr)
+	ports := make([]corev1.ContainerPort, 0, len(api)+1)
+	for _, p := range api {
 		ports = append(ports, corev1.ContainerPort{Name: p.name, ContainerPort: p.port, Protocol: corev1.ProtocolTCP})
 	}
-	ports = append(ports, corev1.ContainerPort{Name: "peer", ContainerPort: peerPortOf(cr), Protocol: corev1.ProtocolTCP})
+	ports = append(ports, corev1.ContainerPort{Name: portNamePeer, ContainerPort: peerPortOf(cr), Protocol: corev1.ProtocolTCP})
 	return ports
 }
 
 func httpProbe(path string) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString("health-check")},
+			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString(portNameHealth)},
 		},
 		PeriodSeconds:    10,
 		TimeoutSeconds:   3,

@@ -71,7 +71,7 @@ for a fuller example including the S3 backend.
 | `cluster.peerPort` | Peer replication port (default 7946). |
 | `cluster.etcdPrefix` | etcd key prefix (storage "root", default `/oteldb`). |
 | `cluster.staticZone` | Fixed failure-domain label for the cluster's nodes (ring zone-spreading). |
-| `signals` | Which signals to serve (all default on; `profiles` is the meaningful toggle). |
+| `signals` | Which signals to serve (all default on). Disabling one drops its backend, its API bind and its ports; disabling all is rejected. |
 | `engine` | Storage engine tuning: `flushInterval`, `readCacheSize`, `decodeCacheSize`, `decodeMemoryLimit`, `aggregateStats`. |
 | `service.type` / `annotations` | Client Service exposing the query/ingest APIs. |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `podSecurityContext`, `securityContext`, `podAnnotations`, `podLabels`, `serviceAccountName` | Standard pod scheduling/security knobs. |
