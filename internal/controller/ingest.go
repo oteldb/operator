@@ -34,7 +34,7 @@ import (
 // must stay in step with the storage nodes, and a mismatch is silent: it resolves a different owner
 // set, so writes land where no read will look for them.
 var ingestReservedConfigPaths = map[string]string{
-	keyCluster: "use spec.cluster and spec.etcd.endpoints",
+	keyCluster: hintRingFromSpec,
 }
 
 func ingestEnabled(cr *dbv1alpha1.OtelDBCluster) bool { return cr.Spec.Ingest != nil }
@@ -55,10 +55,10 @@ func renderIngestConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (s
 	cfg := map[string]any{
 		keyCluster: ringConfig(cr, etcdEndpoints),
 		"prometheus_remote_write": map[string]any{
-			keyBind: fmt.Sprintf("0.0.0.0:%d", portPromRW),
+			keyBind: bindAll(portPromRW),
 		},
 		"otlp": map[string]any{
-			"grpc_bind": fmt.Sprintf("0.0.0.0:%d", portOTLPGRPC),
+			"grpc_bind": bindAll(portOTLPGRPC),
 		},
 	}
 
@@ -170,7 +170,7 @@ func buildIngestDeployment(cr *dbv1alpha1.OtelDBCluster, configHash string) *app
 	}
 
 	podLabels := mergeLabels(ingestCommonLabels(cr), spec.PodLabels)
-	annotations := mergeLabels(map[string]string{"oteldb.io/config-hash": configHash}, spec.PodAnnotations)
+	annotations := mergeLabels(map[string]string{annConfigHash: configHash}, spec.PodAnnotations)
 
 	container := corev1.Container{
 		Name:            ingestAppName,
@@ -178,7 +178,7 @@ func buildIngestDeployment(cr *dbv1alpha1.OtelDBCluster, configHash string) *app
 		ImagePullPolicy: cr.Spec.ImagePullPolicy,
 		Command:         []string{ingestBinPath},
 		Args:            []string{"--config=" + configMountPath + "/" + ingestConfigFileName},
-		Env:             ingestPodEnv(cr),
+		Env:             statelessPodEnv(cr),
 		Ports: []corev1.ContainerPort{
 			{Name: portNameOTLPGRPC, ContainerPort: portOTLPGRPC, Protocol: corev1.ProtocolTCP},
 			{Name: portNameIngestHTTP, ContainerPort: portPromRW, Protocol: corev1.ProtocolTCP},
@@ -232,26 +232,4 @@ func buildIngestDeployment(cr *dbv1alpha1.OtelDBCluster, configHash string) *app
 	}
 }
 
-// ingestPodEnv is the odbingest pod environment. Unlike a storage pod it carries no ring identity:
-// odbingest joins nothing, so it has no id, address or zone to advertise.
-func ingestPodEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
-	env := []corev1.EnvVar{
-		{Name: "OTEL_EXPORTER_PROMETHEUS_HOST", Value: "0.0.0.0"},
-		{Name: "OTEL_EXPORTER_PROMETHEUS_PORT", Value: fmt.Sprintf("%d", portSelfMetric)},
-	}
-	if lvl := cr.Spec.LogLevel; lvl != "" {
-		env = append(env, corev1.EnvVar{Name: "OTEL_LOG_LEVEL", Value: lvl})
-	}
-	return env
-}
-
-func ingestProbe(path string) *corev1.Probe {
-	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString(portNameIngestHTTP)},
-		},
-		PeriodSeconds:    10,
-		TimeoutSeconds:   3,
-		FailureThreshold: 3,
-	}
-}
+func ingestProbe(path string) *corev1.Probe { return roleProbe(path, portNameIngestHTTP) }

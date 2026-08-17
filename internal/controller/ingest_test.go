@@ -79,24 +79,7 @@ func TestRenderIngestConfig(t *testing.T) {
 	require.Equal(t, "0.0.0.0:4317", otlp["grpc_bind"])
 }
 
-// A ring parameter that differs between the roles does not fail: the pool resolves a different
-// owner set than the storage nodes do, and writes land where no read will look for them. Both
-// renderers must therefore agree key for key.
-func TestIngestRingMatchesStorageRing(t *testing.T) {
-	cr := ingestCluster()
-
-	storageOut, err := renderConfig(cr, cr.Spec.Etcd.Endpoints)
-	require.NoError(t, err)
-	var storageCfg map[string]any
-	require.NoError(t, yaml.Unmarshal([]byte(storageOut), &storageCfg))
-
-	storageRing := storageCfg["storage"].(map[string]any)["cluster"].(map[string]any)
-	ingestRing := renderedIngest(t, cr)["cluster"].(map[string]any)
-
-	for _, key := range []string{"etcd", "rf", "shards_per_tenant", "root"} {
-		require.Equal(t, storageRing[key], ingestRing[key], "ring parameter %q differs between roles", key)
-	}
-}
+// The ring every role must agree on is covered for all three roles by TestRoleRingsMatch.
 
 func TestRenderIngestConfigExtraConfig(t *testing.T) {
 	cr := ingestCluster()
