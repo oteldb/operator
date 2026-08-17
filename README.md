@@ -24,27 +24,47 @@ the query/ingest APIs.
 
 ### Optional role node groups
 
-Symmetric nodes couple ingest capacity to storage capacity: the only way to absorb a write spike is
-to add a node, and that node immediately takes ownership of a share of the shards. `spec.ingest`
-breaks the coupling by deploying a pool of stateless **`odbingest`** write nodes as a separate
-Deployment. It is opt-in — omit the stanza and the cluster stays symmetric, exactly as before.
+Symmetric nodes couple ingest and query capacity to storage capacity: the only way to absorb a write
+spike or a dashboard reload is to add a node, and that node immediately takes ownership of a share
+of the shards. `spec.ingest` and `spec.query` break the coupling by deploying pools of stateless
+**`odbingest`** write nodes and **`odbselect`** query nodes as separate Deployments. Both are opt-in
+— omit the stanzas and the cluster stays symmetric, exactly as before.
 
-Unlike VictoriaMetrics' `vminsert`, an `odbingest` pod is **not** handed a list of storage nodes. It
-watches etcd for membership and computes shard owners locally from the rendezvous-hash ring, so
-`spec.replicas` and `spec.ingest.replicas` are genuinely independent: scaling storage triggers no
-config re-render and no restart of the ingest pool.
+Unlike VictoriaMetrics' `vminsert`/`vmselect`, a stateless oteldb pod is **not** handed a list of
+storage nodes. It watches etcd for membership and computes shard owners locally from the
+rendezvous-hash ring, so `spec.replicas`, `spec.ingest.replicas` and `spec.query.replicas` are
+genuinely independent: scaling storage triggers no config re-render and no restart of either pool.
 
-What the pool *does* need is the ring's shape — `replicationFactor`, `shardsPerTenant`, `etcdPrefix`
+What a pool *does* need is the ring's shape — `replicationFactor`, `shardsPerTenant`, `etcdPrefix`
 — and a mismatch there **fails silently**: the pool resolves a different owner set than the nodes
-do, and writes land where no read will look for them. The operator renders both roles from the same
-`spec.cluster`, so the mismatch cannot be expressed.
+do, so writes land where no read will look for them and reads look where the data is not. The
+operator renders all three roles from the same `spec.cluster`, so the mismatch cannot be expressed.
 
-> **`odbingest` is not in the released oteldb image yet.** It is absent from oteldb's goreleaser
-> builds and `release.Dockerfile`, so no published `ghcr.io/oteldb/oteldb` tag contains the binary.
-> Set `spec.ingest.image` to a build that ships it until that is fixed upstream.
+> **Neither binary is in the released oteldb image yet.** `odbingest` is absent from oteldb's
+> goreleaser builds and `release.Dockerfile`, and `odbselect`'s release packaging ships with
+> [oteldb/oteldb#1266](https://github.com/oteldb/oteldb/pull/1266). No published
+> `ghcr.io/oteldb/oteldb` tag contains either one. Set `spec.ingest.image` / `spec.query.image` to a
+> build that ships them until that is fixed upstream.
 
-A stateless `odbselect` query pool (`spec.query`) is the matching read half; it is not implemented
-yet, pending [oteldb/oteldb#1266](https://github.com/oteldb/oteldb/pull/1266).
+#### The query pool's shape
+
+`odbingest` serves OTLP/HTTP, remote write and its health endpoints on one listener. `odbselect`
+does not: it serves **four query APIs on four listeners** (`9090` PromQL, `3100` LogQL, `3200`
+TraceQL, `4040` Pyroscope) plus health on `13133`. Three consequences:
+
+- **One Service, several ports.** `<name>-query` publishes every enabled API. The four APIs are one
+  pod set behind one selector and each already has its own port, so a Service per API would add DNS
+  names — and, at `type: LoadBalancer`, four load balancers — without making anything addressable
+  that is not addressable now.
+- **`spec.signals` turns an API off, not a per-API knob.** The four APIs map 1:1 onto the four
+  signals the cluster already toggles, and serving an API for a signal the cluster does not store
+  can only answer empty. A disabled signal renders `bind: "-"` (odbselect's disable convention) and
+  drops the port from the pool and its Service. Note the `"-"` is *required*: odbselect defaults
+  every API block it does not find, so simply omitting one would serve it anyway.
+- **Probes hit the health listener**, not a data port — it is the one listener that is served
+  whatever `spec.signals` leaves enabled. `/readyz` answers 503 until the ring has a member, so a
+  starting pod stays out of the load balancer while a query could only return an empty result that
+  looks like an answer.
 
 ### etcd is bring-your-own
 
@@ -86,6 +106,7 @@ for a fuller example including the S3 backend.
 |---|---|
 | `replicas` | Number of oteldb storage nodes (StatefulSet size). Use `>= cluster.replicationFactor`. |
 | `ingest` | Optional stateless `odbingest` write pool (Deployment). Absent ⇒ symmetric nodes handle ingest. Takes `replicas` (default 2), `image`, `service`, `extraConfig` and the standard scheduling/security knobs. |
+| `query` | Optional stateless `odbselect` query pool (Deployment). Absent ⇒ symmetric nodes answer queries. Same knobs as `ingest`. Which APIs it serves follows `spec.signals`. |
 | `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.46.0`). |
 | `etcd.endpoints` | **Required.** External etcd endpoint list. |
 | `storage.backend` | `file` (default, per-node PVC) or `s3` (shared object store). |
@@ -144,13 +165,21 @@ spec field to use instead.
 `spec.ingest.extraConfig` is merged over the generated `odbingest.yml` under the same rules, with
 the whole `cluster` block reserved for `spec.cluster` and `spec.etcd.endpoints`.
 
+`spec.query.extraConfig` is merged over the generated `odbselect.yml`, reserving `cluster` and the
+five listener addresses (`prometheus.bind`, `loki.bind`, `tempo.bind`, `pyroscope.bind`,
+`health.bind`). The binds are reserved because odbselect keeps serving its other listeners if one
+moves: the Service port the operator published would point at nothing while the pod stayed `Ready`.
+Everything else in a block is free — `prometheus.max_samples`, `loki.max_sample_rows`, per-listener
+`auth`, `shutdown_timeout`. Use `spec.signals` to turn an API off.
+
 ### Status
 
 `status` reports `phase` (`Pending`/`Progressing`/`Ready`/`Degraded`), `replicas`,
-`readyReplicas`, `ingestReplicas`, `ingestReadyReplicas`, the resolved `etcdEndpoints`, and standard
-`Available`/`Progressing`/`Degraded` conditions. `kubectl get oteldbcluster` prints replicas, ready
-count, and phase. The phase tracks the storage nodes: they hold the data, and an ingest pool still
-rolling out does not make the cluster unavailable.
+`readyReplicas`, `ingestReplicas`, `ingestReadyReplicas`, `queryReplicas`, `queryReadyReplicas`, the
+resolved `etcdEndpoints`, and standard `Available`/`Progressing`/`Degraded` conditions.
+`kubectl get oteldbcluster` prints replicas, ready count, and phase. The phase tracks the storage
+nodes: they hold the data, and a stateless pool still rolling out does not make the cluster
+unavailable.
 
 ## How per-pod identity works
 
@@ -172,6 +201,11 @@ The ingest Service (`<name>-ingest`) exposes `4317` OTLP gRPC, `4318` OTLP HTTP,
 remote-write and `8090` self-metrics. `odbingest` serves OTLP/HTTP, remote write and its health
 endpoints on **one** listener (`19291`), so the Service publishes `4318` — the port stock OTLP/HTTP
 exporters target — and remaps it onto that listener.
+
+The query Service (`<name>-query`) exposes `9090` PromQL, `3200` TraceQL, `3100` LogQL, `4040`
+Pyroscope and `8090` self-metrics, dropping any whose signal is disabled. `odbselect` serves each on
+its own listener, so these are published one-to-one; its health listener (`13133`) is probed, not
+published.
 
 ## Getting Started
 
@@ -209,4 +243,6 @@ Controller layout under `internal/controller/`:
 - `oteldbcluster_controller.go` — reconcile loop, apply/owner-ref helper, status.
 - `config.go` — renders the oteldb `config.yml` from the spec.
 - `resources.go` — builds the ConfigMap, headless + client Services, and StatefulSet.
+- `ingest.go` / `query.go` — the stateless `odbingest` and `odbselect` pools: config, Service,
+  Deployment.
 - `naming.go` — names, labels, ports.

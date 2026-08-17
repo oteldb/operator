@@ -31,9 +31,10 @@ type OtelDBClusterSpec struct {
 	// StatefulSet pod that ingests, queries, stores, and replicates. For real redundancy this
 	// should be at least the replication factor (see Cluster.ReplicationFactor).
 	//
-	// This is the storage dimension only. Ingest capacity scales separately via spec.ingest, and
-	// scaling either has no effect on the other: membership lives in etcd and the ring is computed
-	// from it, so an ingest pod needs no knowledge of how many storage nodes there are.
+	// This is the storage dimension only. Ingest and query capacity scale separately via
+	// spec.ingest and spec.query, and scaling any of them has no effect on the others: membership
+	// lives in etcd and the ring is computed from it, so a stateless pod needs no knowledge of how
+	// many storage nodes there are.
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	// +optional
@@ -48,6 +49,15 @@ type OtelDBClusterSpec struct {
 	// to it at all.
 	// +optional
 	Ingest *IngestSpec `json:"ingest,omitempty"`
+
+	// Query optionally deploys a pool of stateless odbselect query nodes, so query capacity scales
+	// independently of storage. Absent (the default) means no query pool: the storage nodes are
+	// symmetric and answer queries themselves.
+	//
+	// The pool holds no data and is not a ring member. It follows etcd membership read-only and
+	// fans each read out to the shard's owners, so scaling spec.replicas needs no change to it.
+	// +optional
+	Query *QuerySpec `json:"query,omitempty"`
 
 	// Image is the oteldb container image. Defaults to the operator's pinned image when empty.
 	// +optional
@@ -246,6 +256,97 @@ type IngestSpec struct {
 	//
 	// The cluster block is reserved and rejected instead of merged: it must stay in step with the
 	// storage nodes. Configure it through spec.etcd and spec.cluster.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
+}
+
+// QuerySpec configures the stateless odbselect query pool: a Deployment of nodes that serve the
+// PromQL, LogQL, TraceQL and Pyroscope APIs by reading through the ring instead of local storage.
+//
+// The pool's ring parameters (etcd endpoints, replication factor, shards per tenant, key prefix)
+// are rendered from spec.etcd and spec.cluster, the same source the storage nodes render from. A
+// mismatch there does not fail — it resolves a different owner set than the nodes do, so reads look
+// where the data is not — so it is deliberately not configurable per pool.
+//
+// Which APIs the pool serves follows spec.signals, the same toggle that decides what the storage
+// nodes serve and store: a disabled signal's API is switched off on the pool and its port is
+// dropped from the query Service. There is no separate per-API toggle, because serving an API for
+// a signal the cluster does not store can only answer empty.
+//
+// The odbselect binary is not yet shipped in the released oteldb image (it lands with
+// oteldb/oteldb#1266). Until it is, set Image to a build that contains it.
+type QuerySpec struct {
+	// Replicas is the number of odbselect pods. They hold no data, so this is purely a throughput
+	// and availability knob and can be changed freely.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Image is the container image running odbselect. Defaults to the cluster image
+	// (spec.image, else the operator's pinned image).
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Resources are the compute resources for each odbselect container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Service configures the client-facing Service that exposes the query APIs. One Service carries
+	// every enabled API, each on its own port; they share a pod set, so splitting them across four
+	// Services would only add DNS names.
+	// +optional
+	Service ServiceSpec `json:"service,omitempty"`
+
+	// PodAnnotations are added to every odbselect pod.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// PodLabels are added to every odbselect pod.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// ServiceAccountName is the ServiceAccount for the odbselect pods. Empty falls back to
+	// spec.serviceAccountName.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// NodeSelector constrains odbselect pods to nodes with matching labels.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Affinity for odbselect pods. When empty, the operator applies a soft anti-affinity that
+	// spreads the pool across nodes.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// Tolerations for odbselect pods.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// TopologySpreadConstraints for odbselect pods.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
+	// PodSecurityContext for odbselect pods.
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// SecurityContext for the odbselect container.
+	// +optional
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
+	// ExtraConfig is arbitrary additional odbselect config deeply merged over the generated config,
+	// as a top-level YAML/JSON object. Use it to set fields the CRD does not model, such as
+	// prometheus.max_samples, loki.max_sample_rows, per-listener auth or shutdown_timeout.
+	//
+	// The cluster block is reserved and rejected instead of merged: it must stay in step with the
+	// storage nodes. Configure it through spec.etcd and spec.cluster. The listener addresses
+	// (prometheus.bind, loki.bind, tempo.bind, pyroscope.bind, health.bind) are reserved too: the
+	// operator publishes them as Service ports and probes them, and odbselect keeps serving its
+	// other listeners if one moves, so a rebind would fail silently rather than crash the pod. Use
+	// spec.signals to turn an API off.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
@@ -621,6 +722,15 @@ type OtelDBClusterStatus struct {
 	// IngestReadyReplicas is the number of ready odbingest nodes.
 	// +optional
 	IngestReadyReplicas int32 `json:"ingestReadyReplicas,omitempty"`
+
+	// QueryReplicas is the desired number of odbselect nodes. Zero when no query pool is
+	// configured.
+	// +optional
+	QueryReplicas int32 `json:"queryReplicas,omitempty"`
+
+	// QueryReadyReplicas is the number of ready odbselect nodes.
+	// +optional
+	QueryReadyReplicas int32 `json:"queryReadyReplicas,omitempty"`
 
 	// EtcdEndpoints is the resolved etcd endpoint list the cluster is using.
 	// +optional

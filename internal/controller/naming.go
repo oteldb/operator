@@ -29,13 +29,33 @@ const defaultImage = "ghcr.io/oteldb/oteldb:v0.46.0"
 const (
 	appName        = "oteldb"          // app label value and container name
 	ingestAppName  = "odbingest"       // ingest app label value, container name and binary
+	queryAppName   = "odbselect"       // query app label value, container name and binary
 	valStorage     = "storage"         // oteldb signal-backend value and component label
 	valIngest      = "ingest"          // ingest component label
+	valQuery       = "query"           // query component label
 	defaultDataDir = "/var/lib/oteldb" // default storage.dir / WAL dir
 	keyBind        = "bind"            // oteldb per-API bind config key
+	// bindDisabled is odbselect's "do not serve this API" bind. An omitted block is not enough:
+	// odbselect applies its defaults to every API block unconditionally, so a missing one is served
+	// on its default port (see cmd/odbselect/config.go, setDefaults and enabled).
+	bindDisabled = "-"
 
 	envAWSAccessKeyID     = "AWS_ACCESS_KEY_ID"
 	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
+	envPrometheusHost     = "OTEL_EXPORTER_PROMETHEUS_HOST"
+	envPrometheusPort     = "OTEL_EXPORTER_PROMETHEUS_PORT"
+	envLogLevel           = "OTEL_LOG_LEVEL"
+
+	// annConfigHash carries the rendered config's digest on a pod template, so a config change rolls
+	// the workload.
+	annConfigHash = "oteldb.io/config-hash"
+
+	// hintRingFromSpec is the remediation for a reserved ring path: every role renders it from the
+	// same two spec fields, which is what keeps them from resolving different owner sets.
+	hintRingFromSpec = "use spec.cluster and spec.etcd.endpoints"
+
+	// bindAllHost is the address every listener binds, leaving reachability to the Service.
+	bindAllHost = "0.0.0.0"
 )
 
 // oteldb config keys shared by the renderer and the reserved-path guard.
@@ -50,6 +70,17 @@ const (
 	keyDir     = "dir"
 	keyEtcd    = "etcd"
 	keyPort    = "port"
+)
+
+// Query API config block keys, shared by cmd/oteldb and cmd/odbselect.
+const (
+	keyPrometheus = "prometheus"
+	keyTempo      = "tempo"
+	keyLoki       = "loki"
+	keyPyroscope  = "pyroscope"
+	// keyHealth is odbselect's health listener block. cmd/oteldb spells the same thing
+	// "health_check".
+	keyHealth = "health"
 )
 
 // Container ports exposed by every oteldb node. Names must be <= 15 chars (k8s port-name limit).
@@ -91,9 +122,12 @@ const (
 	configMountPath      = "/etc/otel"
 	configFileName       = "config.yml"
 	ingestConfigFileName = "odbingest.yml"
+	queryConfigFileName  = "odbselect.yml"
 	// ingestBinPath is the odbingest entrypoint inside the oteldb image, which defaults to the
 	// oteldb binary.
 	ingestBinPath = "/usr/local/bin/odbingest"
+	// queryBinPath is the odbselect entrypoint inside the oteldb image.
+	queryBinPath = "/usr/local/bin/odbselect"
 )
 
 // resourceNames centralizes the derived names for a cluster's child objects.
@@ -110,6 +144,9 @@ func (n resourceNames) clientService() string    { return n.base }
 func (n resourceNames) ingestDeployment() string { return n.base + "-ingest" }
 func (n resourceNames) ingestConfigMap() string  { return n.base + "-ingest-config" }
 func (n resourceNames) ingestService() string    { return n.base + "-ingest" }
+func (n resourceNames) queryDeployment() string  { return n.base + "-query" }
+func (n resourceNames) queryConfigMap() string   { return n.base + "-query-config" }
+func (n resourceNames) queryService() string     { return n.base + "-query" }
 
 // roleSelectorLabels are the immutable pod-selector labels for one role's pods. The role's binary
 // is the app name, which is what keeps the storage and ingest pod sets from selecting each other:
@@ -146,6 +183,14 @@ func ingestSelectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
 
 func ingestCommonLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
 	return roleCommonLabels(cr, ingestAppName, valIngest)
+}
+
+func querySelectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
+	return roleSelectorLabels(cr, queryAppName)
+}
+
+func queryCommonLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
+	return roleCommonLabels(cr, queryAppName, valQuery)
 }
 
 // mergeLabels returns a new map combining base with extra (extra wins).

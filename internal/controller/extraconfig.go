@@ -40,7 +40,7 @@ var reservedConfigPaths = map[string]string{
 	"storage.dir":                 "use spec.storage.dir",
 	"storage.wal_dir":             "use spec.storage.dir",
 	"storage.s3":                  "use spec.storage.s3",
-	"storage.cluster":             "use spec.cluster and spec.etcd.endpoints",
+	"storage.cluster":             hintRingFromSpec,
 	"storage.flush_interval":      "use spec.engine.flushInterval",
 	"storage.read_cache_bytes":    "use spec.engine.readCacheSize",
 	"storage.decode_cache_bytes":  "use spec.engine.decodeCacheSize",
