@@ -110,3 +110,37 @@ spec:
         # keys default to AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
   cluster:
     replicationFactor: 2
+---
+# Example splitting ingest off the storage nodes: three storage nodes plus a stateless odbingest
+# pool that scales on its own. The pool holds no data and is not a ring member — it watches etcd
+# for membership and routes each shard to its primary, so scaling `replicas` needs no change here.
+#
+# NOTE: odbingest is not shipped in the released oteldb image yet, hence the explicit image below.
+apiVersion: db.oteldb.io/v1alpha1
+kind: OtelDBCluster
+metadata:
+  name: oteldbcluster-ingest-sample
+spec:
+  replicas: 3
+  etcd:
+    endpoints: ["http://etcd:2379"]
+  cluster:
+    replicationFactor: 3
+    shardsPerTenant: 4
+
+  ingest:
+    replicas: 6
+    image: "ghcr.io/oteldb/oteldb:with-odbingest"
+    resources:
+      requests:
+        cpu: "1"
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # Fields the CRD does not model. The whole `cluster` block is reserved: it is rendered from
+    # spec.cluster and spec.etcd so it cannot drift from the storage nodes.
+    extraConfig:
+      prometheus_remote_write:
+        time_threshold: 1h
+    service:
+      type: ClusterIP

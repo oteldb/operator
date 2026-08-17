@@ -44,7 +44,7 @@ type OtelDBClusterReconciler struct {
 // +kubebuilder:rbac:groups=db.oteldb.io,resources=oteldbclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db.oteldb.io,resources=oteldbclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=db.oteldb.io,resources=oteldbclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -104,6 +104,47 @@ func (r *OtelDBClusterReconciler) reconcile(ctx context.Context, cr *dbv1alpha1.
 	if err := r.apply(ctx, cr, buildStatefulSet(cr, hash)); err != nil {
 		return fmt.Errorf("statefulset: %w", err)
 	}
+	return r.reconcileIngest(ctx, cr, endpoints)
+}
+
+// reconcileIngest applies the stateless odbingest pool, or removes it when spec.ingest is absent.
+func (r *OtelDBClusterReconciler) reconcileIngest(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, endpoints []string) error {
+	if !ingestEnabled(cr) {
+		return r.pruneIngest(ctx, cr)
+	}
+
+	cm, err := buildIngestConfigMap(cr, endpoints)
+	if err != nil {
+		return err
+	}
+	if err := r.apply(ctx, cr, cm); err != nil {
+		return fmt.Errorf("ingest configmap: %w", err)
+	}
+	hash := configHash(cm.Data[ingestConfigFileName])
+
+	if err := r.apply(ctx, cr, buildIngestService(cr)); err != nil {
+		return fmt.Errorf("ingest service: %w", err)
+	}
+	if err := r.apply(ctx, cr, buildIngestDeployment(cr, hash)); err != nil {
+		return fmt.Errorf("ingest deployment: %w", err)
+	}
+	return nil
+}
+
+// pruneIngest deletes the ingest pool's objects. Owner references only collect them when the whole
+// cluster goes away, so dropping spec.ingest has to remove them explicitly.
+func (r *OtelDBClusterReconciler) pruneIngest(ctx context.Context, cr *dbv1alpha1.OtelDBCluster) error {
+	n := namesFor(cr)
+	objs := []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: n.ingestDeployment(), Namespace: cr.Namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: n.ingestService(), Namespace: cr.Namespace}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: n.ingestConfigMap(), Namespace: cr.Namespace}},
+	}
+	for _, obj := range objs {
+		if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete ingest %T: %w", obj, err)
+		}
+	}
 	return nil
 }
 
@@ -154,6 +195,11 @@ func reconcileInto(dst, src client.Object) {
 		d.Spec.ServiceName = s.Spec.ServiceName
 		d.Spec.PodManagementPolicy = s.Spec.PodManagementPolicy
 		d.Spec.Template = s.Spec.Template
+	case *appsv1.Deployment:
+		s := src.(*appsv1.Deployment)
+		d.Spec.Replicas = s.Spec.Replicas
+		d.Spec.Selector = s.Spec.Selector
+		d.Spec.Template = s.Spec.Template
 	}
 }
 
@@ -167,11 +213,27 @@ func (r *OtelDBClusterReconciler) updateStatus(ctx context.Context, cr *dbv1alph
 		return err
 	}
 
+	ingestDesired := ingestReplicasOf(cr)
+	ingestReady := int32(0)
+	if ingestEnabled(cr) {
+		deploy := &appsv1.Deployment{}
+		key := client.ObjectKey{Namespace: cr.Namespace, Name: namesFor(cr).ingestDeployment()}
+		if err := r.Get(ctx, key, deploy); err == nil {
+			ingestReady = deploy.Status.ReadyReplicas
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+
 	cr.Status.Replicas = desired
 	cr.Status.ReadyReplicas = ready
+	cr.Status.IngestReplicas = ingestDesired
+	cr.Status.IngestReadyReplicas = ingestReady
 	cr.Status.EtcdEndpoints = cr.Spec.Etcd.Endpoints
 	cr.Status.ObservedGeneration = cr.Generation
 
+	// The phase tracks the storage nodes: they are what holds the data, and an ingest pool that is
+	// still rolling out does not make the cluster unavailable.
 	switch {
 	case ready == 0:
 		cr.Status.Phase = dbv1alpha1.PhasePending
@@ -219,6 +281,7 @@ func (r *OtelDBClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dbv1alpha1.OtelDBCluster{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Named("oteldbcluster").

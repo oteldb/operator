@@ -143,17 +143,12 @@ func buildStatefulSet(cr *dbv1alpha1.OtelDBCluster, configHash string) *appsv1.S
 	n := namesFor(cr)
 	replicas := replicasOf(cr)
 
-	image := cr.Spec.Image
-	if image == "" {
-		image = defaultImage
-	}
-
 	podLabels := mergeLabels(commonLabels(cr), cr.Spec.PodLabels)
 	annotations := mergeLabels(map[string]string{"oteldb.io/config-hash": configHash}, cr.Spec.PodAnnotations)
 
 	container := corev1.Container{
 		Name:            appName,
-		Image:           image,
+		Image:           imageOf(cr),
 		ImagePullPolicy: cr.Spec.ImagePullPolicy,
 		Args:            []string{"--config=" + configMountPath + "/" + configFileName},
 		Env:             podEnv(cr),
@@ -310,11 +305,25 @@ func dataClaim(cr *dbv1alpha1.OtelDBCluster) corev1.PersistentVolumeClaim {
 	}
 }
 
+// imageOf is the cluster's oteldb image.
+func imageOf(cr *dbv1alpha1.OtelDBCluster) string {
+	if cr.Spec.Image != "" {
+		return cr.Spec.Image
+	}
+	return defaultImage
+}
+
 // affinityFor returns the user's affinity, or a default soft anti-affinity spreading replicas
 // across nodes.
 func affinityFor(cr *dbv1alpha1.OtelDBCluster) *corev1.Affinity {
-	if cr.Spec.Affinity != nil {
-		return cr.Spec.Affinity
+	return affinityOr(cr.Spec.Affinity, selectorLabels(cr))
+}
+
+// affinityOr returns given, or a default soft anti-affinity spreading the pods matching selector
+// across nodes.
+func affinityOr(given *corev1.Affinity, selector map[string]string) *corev1.Affinity {
+	if given != nil {
+		return given
 	}
 	return &corev1.Affinity{
 		PodAntiAffinity: &corev1.PodAntiAffinity{
@@ -322,7 +331,7 @@ func affinityFor(cr *dbv1alpha1.OtelDBCluster) *corev1.Affinity {
 				Weight: 100,
 				PodAffinityTerm: corev1.PodAffinityTerm{
 					TopologyKey:   "kubernetes.io/hostname",
-					LabelSelector: &metav1.LabelSelector{MatchLabels: selectorLabels(cr)},
+					LabelSelector: &metav1.LabelSelector{MatchLabels: selector},
 				},
 			}},
 		},
