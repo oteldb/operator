@@ -65,20 +65,9 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	}
 
 	// The cluster block. Only the deployment-wide settings live here; id/addr/zone come from env.
-	cluster := map[string]any{
-		keyEtcd: etcdEndpoints,
-		keyPort: int(peerPortOf(cr)),
-	}
-	if rf := cr.Spec.Cluster.ReplicationFactor; rf != nil {
-		cluster["rf"] = int(*rf)
-	}
-	if s := cr.Spec.Cluster.ShardsPerTenant; s != nil {
-		cluster["shards_per_tenant"] = int(*s)
-	}
-	if p := cr.Spec.Cluster.EtcdPrefix; p != "" {
-		cluster["root"] = p
-	}
-	storage["cluster"] = cluster
+	cluster := ringConfig(cr, etcdEndpoints)
+	cluster[keyPort] = int(peerPortOf(cr))
+	storage[keyCluster] = cluster
 
 	// S3 shared backend (optional). The data dir doubles as the WAL dir so unflushed head data
 	// survives restarts. Credentials are injected via env (AWS default chain), never the config.
@@ -148,6 +137,23 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 		return "", fmt.Errorf("marshal config: %w", err)
 	}
 	return string(out), nil
+}
+
+// ringConfig renders the ring parameters every role must agree on. A role that resolves a different
+// owner set than the storage nodes do does not fail — it reads and writes where the others do not
+// look — so all of them render from this one function.
+func ringConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) map[string]any {
+	ring := map[string]any{keyEtcd: etcdEndpoints}
+	if rf := cr.Spec.Cluster.ReplicationFactor; rf != nil {
+		ring["rf"] = int(*rf)
+	}
+	if s := cr.Spec.Cluster.ShardsPerTenant; s != nil {
+		ring["shards_per_tenant"] = int(*s)
+	}
+	if p := cr.Spec.Cluster.EtcdPrefix; p != "" {
+		ring["root"] = p
+	}
+	return ring
 }
 
 func backendOf(cr *dbv1alpha1.OtelDBCluster) dbv1alpha1.StorageBackend {

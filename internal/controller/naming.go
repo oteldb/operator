@@ -28,7 +28,9 @@ const defaultImage = "ghcr.io/oteldb/oteldb:v0.46.0"
 // Repeated string values, extracted so a single source of truth drives config and labels.
 const (
 	appName        = "oteldb"          // app label value and container name
+	ingestAppName  = "odbingest"       // ingest app label value, container name and binary
 	valStorage     = "storage"         // oteldb signal-backend value and component label
+	valIngest      = "ingest"          // ingest component label
 	defaultDataDir = "/var/lib/oteldb" // default storage.dir / WAL dir
 	keyBind        = "bind"            // oteldb per-API bind config key
 
@@ -44,6 +46,7 @@ const (
 	keyProfilesBackend = "profiles_backend"
 
 	keyBackend = "backend"
+	keyCluster = "cluster"
 	keyDir     = "dir"
 	keyEtcd    = "etcd"
 	keyPort    = "port"
@@ -76,13 +79,21 @@ const (
 	portNameSelfMetric = "metrics"
 	portNameHealth     = "health-check"
 	portNamePeer       = "peer"
+	// portNameIngestHTTP is odbingest's single HTTP listener: OTLP/HTTP, Prometheus remote write
+	// and the health endpoints all share it (see cmd/odbingest/app.go, where otlp.Register and the
+	// remote write handler are mounted on one mux bound to prometheus_remote_write.bind).
+	portNameIngestHTTP = "ingest-http"
 )
 
 const (
-	configVolumeName = "config"
-	dataVolumeName   = "data"
-	configMountPath  = "/etc/otel"
-	configFileName   = "config.yml"
+	configVolumeName     = "config"
+	dataVolumeName       = "data"
+	configMountPath      = "/etc/otel"
+	configFileName       = "config.yml"
+	ingestConfigFileName = "odbingest.yml"
+	// ingestBinPath is the odbingest entrypoint inside the oteldb image, which defaults to the
+	// oteldb binary.
+	ingestBinPath = "/usr/local/bin/odbingest"
 )
 
 // resourceNames centralizes the derived names for a cluster's child objects.
@@ -92,25 +103,49 @@ type resourceNames struct {
 
 func namesFor(cr *dbv1alpha1.OtelDBCluster) resourceNames { return resourceNames{base: cr.Name} }
 
-func (n resourceNames) statefulSet() string   { return n.base }
-func (n resourceNames) configMap() string     { return n.base + "-config" }
-func (n resourceNames) peerService() string   { return n.base + "-peers" }
-func (n resourceNames) clientService() string { return n.base }
+func (n resourceNames) statefulSet() string      { return n.base }
+func (n resourceNames) configMap() string        { return n.base + "-config" }
+func (n resourceNames) peerService() string      { return n.base + "-peers" }
+func (n resourceNames) clientService() string    { return n.base }
+func (n resourceNames) ingestDeployment() string { return n.base + "-ingest" }
+func (n resourceNames) ingestConfigMap() string  { return n.base + "-ingest-config" }
+func (n resourceNames) ingestService() string    { return n.base + "-ingest" }
 
-// selectorLabels are the immutable pod-selector labels for a cluster's oteldb pods.
-func selectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
+// roleSelectorLabels are the immutable pod-selector labels for one role's pods. The role's binary
+// is the app name, which is what keeps the storage and ingest pod sets from selecting each other:
+// the storage StatefulSet's selector is immutable after creation, so it must keep exactly the
+// labels it has always had.
+func roleSelectorLabels(cr *dbv1alpha1.OtelDBCluster, app string) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":     appName,
+		"app.kubernetes.io/name":     app,
 		"app.kubernetes.io/instance": cr.Name,
 	}
 }
 
+// roleCommonLabels are roleSelectorLabels plus non-selector metadata labels.
+func roleCommonLabels(cr *dbv1alpha1.OtelDBCluster, app, component string) map[string]string {
+	l := roleSelectorLabels(cr, app)
+	l["app.kubernetes.io/managed-by"] = "oteldb-operator"
+	l["app.kubernetes.io/component"] = component
+	return l
+}
+
+// selectorLabels are the pod-selector labels for a cluster's oteldb storage pods.
+func selectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
+	return roleSelectorLabels(cr, appName)
+}
+
 // commonLabels are selectorLabels plus non-selector metadata labels.
 func commonLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
-	l := selectorLabels(cr)
-	l["app.kubernetes.io/managed-by"] = "oteldb-operator"
-	l["app.kubernetes.io/component"] = valStorage
-	return l
+	return roleCommonLabels(cr, appName, valStorage)
+}
+
+func ingestSelectorLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
+	return roleSelectorLabels(cr, ingestAppName)
+}
+
+func ingestCommonLabels(cr *dbv1alpha1.OtelDBCluster) map[string]string {
+	return roleCommonLabels(cr, ingestAppName, valIngest)
 }
 
 // mergeLabels returns a new map combining base with extra (extra wins).

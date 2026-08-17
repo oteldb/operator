@@ -30,10 +30,24 @@ type OtelDBClusterSpec struct {
 	// Replicas is the number of oteldb storage nodes in the cluster. Each node is a symmetric
 	// StatefulSet pod that ingests, queries, stores, and replicates. For real redundancy this
 	// should be at least the replication factor (see Cluster.ReplicationFactor).
+	//
+	// This is the storage dimension only. Ingest capacity scales separately via spec.ingest, and
+	// scaling either has no effect on the other: membership lives in etcd and the ring is computed
+	// from it, so an ingest pod needs no knowledge of how many storage nodes there are.
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Ingest optionally deploys a pool of stateless odbingest write nodes, so ingest capacity
+	// scales independently of storage. Absent (the default) means no ingest pool: the storage
+	// nodes are symmetric and accept writes themselves.
+	//
+	// The pool holds no data and is not a ring member. It follows etcd membership read-only and
+	// routes each shard's write to that shard's primary, so scaling spec.replicas needs no change
+	// to it at all.
+	// +optional
+	Ingest *IngestSpec `json:"ingest,omitempty"`
 
 	// Image is the oteldb container image. Defaults to the operator's pinned image when empty.
 	// +optional
@@ -155,6 +169,86 @@ type EtcdSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +required
 	Endpoints []string `json:"endpoints"`
+}
+
+// IngestSpec configures the stateless odbingest write pool: a Deployment of nodes that accept
+// OTLP and Prometheus remote write and route each shard to its ring primary.
+//
+// The pool's ring parameters (etcd endpoints, replication factor, shards per tenant, key prefix)
+// are rendered from spec.etcd and spec.cluster, the same source the storage nodes render from. A
+// mismatch there does not fail — it resolves a different owner set than the nodes do, and writes
+// land where no read will look for them — so it is deliberately not configurable per pool.
+//
+// The odbingest binary is not yet shipped in the released oteldb image (it is absent from oteldb's
+// goreleaser builds and release Dockerfile). Until it is, set Image to a build that contains it.
+type IngestSpec struct {
+	// Replicas is the number of odbingest pods. They hold no data, so this is purely a throughput
+	// and availability knob and can be changed freely.
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Image is the container image running odbingest. Defaults to the cluster image
+	// (spec.image, else the operator's pinned image).
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Resources are the compute resources for each odbingest container.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Service configures the client-facing Service that exposes the ingest endpoints.
+	// +optional
+	Service ServiceSpec `json:"service,omitempty"`
+
+	// PodAnnotations are added to every odbingest pod.
+	// +optional
+	PodAnnotations map[string]string `json:"podAnnotations,omitempty"`
+
+	// PodLabels are added to every odbingest pod.
+	// +optional
+	PodLabels map[string]string `json:"podLabels,omitempty"`
+
+	// ServiceAccountName is the ServiceAccount for the odbingest pods. Empty falls back to
+	// spec.serviceAccountName.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
+	// NodeSelector constrains odbingest pods to nodes with matching labels.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Affinity for odbingest pods. When empty, the operator applies a soft anti-affinity that
+	// spreads the pool across nodes.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// Tolerations for odbingest pods.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// TopologySpreadConstraints for odbingest pods.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
+	// PodSecurityContext for odbingest pods.
+	// +optional
+	PodSecurityContext *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
+
+	// SecurityContext for the odbingest container.
+	// +optional
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
+	// ExtraConfig is arbitrary additional odbingest config deeply merged over the generated
+	// config, as a top-level YAML/JSON object. Use it to set fields the CRD does not model, such as
+	// prometheus_remote_write.time_threshold or the OTLP body-size limits.
+	//
+	// The cluster block is reserved and rejected instead of merged: it must stay in step with the
+	// storage nodes. Configure it through spec.etcd and spec.cluster.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
 }
 
 // StorageBackend selects the embedded storage engine's durable backend.
@@ -518,6 +612,15 @@ type OtelDBClusterStatus struct {
 	// ReadyReplicas is the number of ready oteldb nodes.
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas,omitempty"`
+
+	// IngestReplicas is the desired number of odbingest nodes. Zero when no ingest pool is
+	// configured.
+	// +optional
+	IngestReplicas int32 `json:"ingestReplicas,omitempty"`
+
+	// IngestReadyReplicas is the number of ready odbingest nodes.
+	// +optional
+	IngestReadyReplicas int32 `json:"ingestReadyReplicas,omitempty"`
 
 	// EtcdEndpoints is the resolved etcd endpoint list the cluster is using.
 	// +optional

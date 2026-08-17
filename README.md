@@ -22,6 +22,30 @@ The operator models this as **one StatefulSet** of oteldb pods (stable identity 
 FQDN → peer address, per-pod PVC), a **headless Service** for peer DNS, and a **client Service** for
 the query/ingest APIs.
 
+### Optional role node groups
+
+Symmetric nodes couple ingest capacity to storage capacity: the only way to absorb a write spike is
+to add a node, and that node immediately takes ownership of a share of the shards. `spec.ingest`
+breaks the coupling by deploying a pool of stateless **`odbingest`** write nodes as a separate
+Deployment. It is opt-in — omit the stanza and the cluster stays symmetric, exactly as before.
+
+Unlike VictoriaMetrics' `vminsert`, an `odbingest` pod is **not** handed a list of storage nodes. It
+watches etcd for membership and computes shard owners locally from the rendezvous-hash ring, so
+`spec.replicas` and `spec.ingest.replicas` are genuinely independent: scaling storage triggers no
+config re-render and no restart of the ingest pool.
+
+What the pool *does* need is the ring's shape — `replicationFactor`, `shardsPerTenant`, `etcdPrefix`
+— and a mismatch there **fails silently**: the pool resolves a different owner set than the nodes
+do, and writes land where no read will look for them. The operator renders both roles from the same
+`spec.cluster`, so the mismatch cannot be expressed.
+
+> **`odbingest` is not in the released oteldb image yet.** It is absent from oteldb's goreleaser
+> builds and `release.Dockerfile`, so no published `ghcr.io/oteldb/oteldb` tag contains the binary.
+> Set `spec.ingest.image` to a build that ships it until that is fixed upstream.
+
+A stateless `odbselect` query pool (`spec.query`) is the matching read half; it is not implemented
+yet, pending [oteldb/oteldb#1266](https://github.com/oteldb/oteldb/pull/1266).
+
 ### etcd is bring-your-own
 
 The operator **does not manage etcd**. etcd's real operational needs — backups, disaster recovery,
@@ -60,7 +84,8 @@ for a fuller example including the S3 backend.
 
 | Field | Purpose |
 |---|---|
-| `replicas` | Number of oteldb nodes (StatefulSet size). Use `>= cluster.replicationFactor`. |
+| `replicas` | Number of oteldb storage nodes (StatefulSet size). Use `>= cluster.replicationFactor`. |
+| `ingest` | Optional stateless `odbingest` write pool (Deployment). Absent ⇒ symmetric nodes handle ingest. Takes `replicas` (default 2), `image`, `service`, `extraConfig` and the standard scheduling/security knobs. |
 | `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.46.0`). |
 | `etcd.endpoints` | **Required.** External etcd endpoint list. |
 | `storage.backend` | `file` (default, per-node PVC) or `s3` (shared object store). |
@@ -116,11 +141,16 @@ spec field to use instead.
 
 `storage.policy` is now modelled in full, so the whole block is reserved.
 
+`spec.ingest.extraConfig` is merged over the generated `odbingest.yml` under the same rules, with
+the whole `cluster` block reserved for `spec.cluster` and `spec.etcd.endpoints`.
+
 ### Status
 
 `status` reports `phase` (`Pending`/`Progressing`/`Ready`/`Degraded`), `replicas`,
-`readyReplicas`, the resolved `etcdEndpoints`, and standard `Available`/`Progressing`/`Degraded`
-conditions. `kubectl get oteldbcluster` prints replicas, ready count, and phase.
+`readyReplicas`, `ingestReplicas`, `ingestReadyReplicas`, the resolved `etcdEndpoints`, and standard
+`Available`/`Progressing`/`Degraded` conditions. `kubectl get oteldbcluster` prints replicas, ready
+count, and phase. The phase tracks the storage nodes: they hold the data, and an ingest pool still
+rolling out does not make the cluster unavailable.
 
 ## How per-pod identity works
 
@@ -137,6 +167,11 @@ config file.
 Client APIs (exposed by the client Service): `4317` OTLP gRPC, `4318` OTLP HTTP, `19291` Prometheus
 remote-write, `9090` PromQL, `3200` TraceQL (Tempo), `3100` LogQL (Loki), `4040` Pyroscope, `8090`
 self-metrics, `13133` health. Peer replication: `7946` (headless Service).
+
+The ingest Service (`<name>-ingest`) exposes `4317` OTLP gRPC, `4318` OTLP HTTP, `19291` Prometheus
+remote-write and `8090` self-metrics. `odbingest` serves OTLP/HTTP, remote write and its health
+endpoints on **one** listener (`19291`), so the Service publishes `4318` — the port stock OTLP/HTTP
+exporters target — and remaps it onto that listener.
 
 ## Getting Started
 
