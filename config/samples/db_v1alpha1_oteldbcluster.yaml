@@ -111,15 +111,17 @@ spec:
   cluster:
     replicationFactor: 2
 ---
-# Example splitting ingest off the storage nodes: three storage nodes plus a stateless odbingest
-# pool that scales on its own. The pool holds no data and is not a ring member — it watches etcd
-# for membership and routes each shard to its primary, so scaling `replicas` needs no change here.
+# Example splitting ingest and query off the storage nodes: three storage nodes plus a stateless
+# odbingest pool and a stateless odbselect pool, each scaling on its own. Neither pool holds data or
+# is a ring member — both watch etcd for membership and resolve shard owners locally, so scaling
+# `replicas` needs no change here.
 #
-# NOTE: odbingest is not shipped in the released oteldb image yet, hence the explicit image below.
+# NOTE: neither odbingest nor odbselect is shipped in the released oteldb image yet, hence the
+# explicit images below.
 apiVersion: db.oteldb.io/v1alpha1
 kind: OtelDBCluster
 metadata:
-  name: oteldbcluster-ingest-sample
+  name: oteldbcluster-roles-sample
 spec:
   replicas: 3
   etcd:
@@ -142,5 +144,26 @@ spec:
     extraConfig:
       prometheus_remote_write:
         time_threshold: 1h
+    service:
+      type: ClusterIP
+
+  # The read half. odbselect serves the four query APIs on four separate listeners, published as
+  # four ports on one `<name>-query` Service; `spec.signals` decides which of them are served.
+  query:
+    replicas: 4
+    image: "ghcr.io/oteldb/oteldb:with-odbselect"
+    resources:
+      requests:
+        cpu: "2"
+        memory: 2Gi
+      limits:
+        memory: 4Gi
+    # `cluster` and every `*.bind` are reserved: the binds are what the Service publishes and the
+    # probes hit. Everything else in a block is free.
+    extraConfig:
+      prometheus:
+        max_samples: 20000000
+      loki:
+        max_sample_rows: 500000
     service:
       type: ClusterIP
