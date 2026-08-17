@@ -135,8 +135,10 @@ config file.
 ## Ports
 
 Client APIs (exposed by the client Service): `4317` OTLP gRPC, `4318` OTLP HTTP, `19291` Prometheus
-remote-write, `9090` PromQL, `3200` TraceQL (Tempo), `3100` LogQL (Loki), `4040` Pyroscope, `8090`
+remote-write, `9090` PromQL, `3200` TraceQL (Tempo), `3100` LogQL (Loki), `4040` Pyroscope, `9464`
 self-metrics, `13133` health. Peer replication: `7946` (headless Service).
+
+`8090` is deliberately not exposed: it is oteldb's admin API bind, not a self-metrics endpoint.
 
 ## Getting Started
 
