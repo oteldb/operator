@@ -103,8 +103,9 @@ type OtelDBClusterSpec struct {
 	Engine EngineSpec `json:"engine,omitempty"`
 
 	// Policy is the per-tenant storage policy: retention, admission-control limits, and the
-	// merge-time downsample/precision/recompress tiers. It maps onto oteldb's storage.policy
-	// block. Empty leaves the engine at its defaults (retain forever, no limits, lossless, raw).
+	// merge-time downsample/precision/recompress/erasure-coding tiers. It maps onto oteldb's
+	// storage.policy block. Empty leaves the engine at its defaults (retain forever, no limits,
+	// lossless, raw, full-copy).
 	// +optional
 	Policy PolicySpec `json:"policy,omitempty"`
 
@@ -165,8 +166,8 @@ type OtelDBClusterSpec struct {
 	// instead of being merged: metrics_backend, traces_backend, logs_backend, profiles_backend,
 	// storage.backend, storage.dir, storage.wal_dir, storage.s3, storage.cluster (and everything
 	// below it), storage.flush_interval, storage.read_cache_bytes, storage.decode_cache_bytes,
-	// storage.decode_memory_bytes, storage.aggregate_stats and storage.policy (modelled in full, so
-	// the whole block is reserved). Configure those through spec.storage, spec.cluster, spec.etcd,
+	// storage.decode_memory_bytes, storage.aggregate_stats and storage.policy (modelled in full,
+	// erasure coding included, so the whole block is reserved). Configure those through spec.storage, spec.cluster, spec.etcd,
 	// spec.signals, spec.engine and spec.policy.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -573,6 +574,17 @@ type PolicySpec struct {
 	// merge CPU for storage. It is decode-transparent and lossless. Nil disables it.
 	// +optional
 	Recompress *RecompressSpec `json:"recompress,omitempty"`
+
+	// EC erasure-codes fully-cold parts across Data+Parity nodes instead of holding RF full copies.
+	// Nil keeps full-copy replication.
+	//
+	// It applies only to a shared-nothing cluster — cluster mode with a private per-node backend —
+	// which is exactly what this operator deploys by default, and is the only deployment shape in
+	// which erasure coding is reachable at all. On a shared object store the store owns durability
+	// and the engine leaves every part full-copy, so the operator rejects the block there instead
+	// of rendering a policy that costs and saves nothing.
+	// +optional
+	EC *ECSpec `json:"ec,omitempty"`
 }
 
 // DownsampleTierSpec is one age band of the downsampling policy. Tiers are order-independent: a
@@ -624,6 +636,42 @@ type RecompressSpec struct {
 	// +kubebuilder:validation:Maximum=19
 	// +optional
 	Level *int32 `json:"level,omitempty"`
+}
+
+// ECSpec configures the cold-data erasure-coding tier: a flushed part older than After is
+// re-encoded at merge into Data + Parity Reed-Solomon shards, one per cluster node, in place of the
+// RF full copies. It stores (Data+Parity)/Data of the logical bytes and survives Parity node
+// losses — {4,2} is 1.5x for two tolerated losses, against 3x for RF=3 — paying a
+// reconstruct-on-read cost only for the parts that have converted.
+//
+// Data+Parity becomes the tenant's owner count, so it must not exceed Replicas, and it replaces
+// spec.cluster.replicationFactor outright rather than combining with it (see ECSpec.Parity).
+type ECSpec struct {
+	// Data is the number of data shards (k): any Data shards reconstruct the object.
+	// +kubebuilder:validation:Minimum=1
+	// +required
+	Data int32 `json:"data"`
+
+	// Parity is the number of parity shards (m): the scheme tolerates Parity node losses.
+	//
+	// Data+Parity is also the tenant's owner count under erasure coding, and it applies to the
+	// unflushed head too, not only to the converted parts: the storage engine's replication-factor
+	// lookup returns Data+Parity and ignores the configured replication factor entirely. An EC
+	// policy therefore silently overrides spec.cluster.replicationFactor, so the operator rejects
+	// setting both instead of honouring one and dropping the other.
+	//
+	// Shard placement is rack-safe — one zone failure costs at most Parity shards — only with at
+	// least ceil((Data+Parity)/Parity) distinct zones; below that the engine still converts, and
+	// warns. Spread the nodes with spec.topologySpreadConstraints to earn that.
+	// +kubebuilder:validation:Minimum=1
+	// +required
+	Parity int32 `json:"parity"`
+
+	// After is the age past which a fully-cold part is erasure-coded at merge, mirroring
+	// RecompressSpec.After and riding the same background merge. Empty erasure-codes every part,
+	// accepting the reconstruct-on-read cost everywhere for the cheapest storage.
+	// +optional
+	After *metav1.Duration `json:"after,omitempty"`
 }
 
 // RetentionSpec bounds how long data is kept. Enforcement happens at merge time and drops whole
