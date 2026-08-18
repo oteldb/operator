@@ -24,6 +24,11 @@ import (
 	dbv1alpha1 "github.com/oteldb/operator/api/v1alpha1"
 )
 
+// maxECShards is the total shard ceiling the storage library enforces on an erasure-coding scheme
+// (github.com/oteldb/storage/cluster/ec, Scheme.Validate). Past it the scheme is rejected
+// downstream and the tenant silently falls back to full-copy.
+const maxECShards = 256
+
 // oteldb storage.policy config keys.
 const (
 	keyPolicy     = "policy"
@@ -32,8 +37,11 @@ const (
 	keyDownsample = "downsample"
 	keyPrecision  = "precision"
 	keyRecompress = "recompress"
+	keyEC         = "ec"
 	keyAfter      = "after"
 	keyInterval   = "interval"
+	keyECData     = "data"
+	keyECParity   = "parity"
 )
 
 // renderPolicy builds the storage.policy block from spec.policy, or returns nil when nothing is
@@ -61,6 +69,18 @@ func renderPolicy(cr *dbv1alpha1.OtelDBCluster) map[string]any {
 			m["level"] = *r.Level
 		}
 		policy[keyRecompress] = m
+	}
+	if e := spec.EC; e != nil {
+		m := map[string]any{
+			keyECData:   e.Data,
+			keyECParity: e.Parity,
+		}
+		// An absent after erasure-codes every part; oteldb spells that as the zero duration, which
+		// is what an omitted key decodes to.
+		if e.After != nil {
+			m[keyAfter] = e.After.Duration.String()
+		}
+		policy[keyEC] = m
 	}
 
 	if len(policy) == 0 {
@@ -161,7 +181,68 @@ func validatePolicy(cr *dbv1alpha1.OtelDBCluster) error {
 		}
 	}
 
-	return validateMergeTiers(cr.Spec.Policy)
+	if err := validateMergeTiers(cr.Spec.Policy); err != nil {
+		return err
+	}
+	return validateEC(cr)
+}
+
+// validateEC rejects an erasure-coding policy the engine would ignore or could not place. EC is
+// the one policy whose preconditions are topology, not values, and every one of them fails
+// silently: oteldb warns and carries on, the ring clamps an oversized scheme to the members it
+// has, and a configured replication factor is dropped without a word. The operator owns the
+// topology, so it can turn each of those into a spec error instead.
+func validateEC(cr *dbv1alpha1.OtelDBCluster) error {
+	e := cr.Spec.Policy.EC
+	if e == nil {
+		return nil
+	}
+
+	// Data and Parity are already bounded below by the CRD; only the joint bound is left, and it
+	// is the storage library's ([ec.Scheme].Validate).
+	if shards := int64(e.Data) + int64(e.Parity); shards > maxECShards {
+		return invalidSpec("spec.policy.ec has %d shards (data %d + parity %d), at most %d are allowed",
+			shards, e.Data, e.Parity, maxECShards)
+	}
+	if e.After != nil && e.After.Duration < 0 {
+		return invalidSpec("spec.policy.ec.after must not be negative, got %s", e.After.Duration)
+	}
+
+	// Erasure coding needs a shared-nothing cluster. Cluster mode is a given here (spec.etcd is
+	// required), so a private backend is the only half that can be missing.
+	if !privateBackendOf(cr) {
+		return invalidSpec("spec.policy.ec needs a private per-node backend, but spec.storage.backend " +
+			"is s3 (or spec.cluster.privateBackend is false): a shared object store owns durability " +
+			"itself, so every part would stay full-copy and the policy would do nothing")
+	}
+
+	// Data+Parity is the owner count, so the shards need that many nodes to land on. The ring
+	// clamps to the members it has instead of failing, which converts parts into a scheme the
+	// cluster cannot actually spread.
+	if shards := e.Data + e.Parity; shards > replicasOf(cr) {
+		return invalidSpec("spec.policy.ec spreads %d shards (data %d + parity %d) one per node, "+
+			"but spec.replicas is %d", shards, e.Data, e.Parity, replicasOf(cr))
+	}
+
+	// Under EC the owner count is Data+Parity and the tenant's replication factor is ignored —
+	// for the flushed parts and for the unflushed head alike. Honouring one and dropping the other
+	// is exactly the surprise worth refusing: the CR would document a replication factor the
+	// cluster does not use.
+	if rf := cr.Spec.Cluster.ReplicationFactor; rf != nil {
+		return invalidSpec("spec.policy.ec and spec.cluster.replicationFactor are mutually exclusive: "+
+			"erasure coding fixes the owner count at data+parity (%d), and the replication factor "+
+			"(%d) is ignored; drop spec.cluster.replicationFactor", e.Data+e.Parity, *rf)
+	}
+
+	// A tier that only applies after the data is gone is merge work whose output is dropped
+	// unread, the same rule the other cold tiers get.
+	if maxAge := cr.Spec.Policy.Retention.MaxAge; maxAge != nil && maxAge.Duration > 0 &&
+		e.After != nil && e.After.Duration >= maxAge.Duration {
+		return invalidSpec("spec.policy.ec.after (%s) is at or past spec.policy.retention.maxAge (%s): "+
+			"parts are dropped before they are erasure-coded", e.After.Duration, maxAge.Duration)
+	}
+
+	return nil
 }
 
 // validateMergeTiers rejects downsample/precision/recompress settings the engine would ignore. The
