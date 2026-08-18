@@ -40,7 +40,7 @@ var reservedConfigPaths = map[string]string{
 	"storage.dir":                 "use spec.storage.dir",
 	"storage.wal_dir":             "use spec.storage.dir",
 	"storage.s3":                  "use spec.storage.s3",
-	"storage.cluster":             "use spec.cluster and spec.etcd.endpoints",
+	"storage.cluster":             hintRingFromSpec,
 	"storage.flush_interval":      "use spec.engine.flushInterval",
 	"storage.read_cache_bytes":    "use spec.engine.readCacheSize",
 	"storage.decode_cache_bytes":  "use spec.engine.decodeCacheSize",
@@ -67,10 +67,15 @@ func invalidSpec(format string, args ...any) error {
 	return validationError{err: fmt.Errorf(format, args...)}
 }
 
-// validateExtraConfig rejects extraConfig that targets operator-owned paths.
+// validateExtraConfig rejects spec.extraConfig that targets operator-owned paths.
 func validateExtraConfig(extra map[string]any) error {
+	return validateExtraConfigPaths("spec.extraConfig", extra, reservedConfigPaths)
+}
+
+// validateExtraConfigPaths rejects an extraConfig block that targets any of reserved.
+func validateExtraConfigPaths(field string, extra map[string]any, reserved map[string]string) error {
 	var found []string
-	collectReservedPaths(extra, "", &found)
+	collectReservedPaths(extra, "", reserved, &found)
 	if len(found) == 0 {
 		return nil
 	}
@@ -78,24 +83,24 @@ func validateExtraConfig(extra map[string]any) error {
 
 	msgs := make([]string, 0, len(found))
 	for _, p := range found {
-		msgs = append(msgs, fmt.Sprintf("%s (%s)", p, reservedConfigPaths[p]))
+		msgs = append(msgs, fmt.Sprintf("%s (%s)", p, reserved[p]))
 	}
-	return invalidSpec("spec.extraConfig sets reserved config %s: %s",
-		plural(len(found), "path", "paths"), strings.Join(msgs, ", "))
+	return invalidSpec("%s sets reserved config %s: %s",
+		field, plural(len(found), "path", "paths"), strings.Join(msgs, ", "))
 }
 
-func collectReservedPaths(m map[string]any, prefix string, found *[]string) {
+func collectReservedPaths(m map[string]any, prefix string, reserved map[string]string, found *[]string) {
 	for k, v := range m {
 		path := k
 		if prefix != "" {
 			path = prefix + "." + k
 		}
-		if _, reserved := reservedConfigPaths[path]; reserved {
+		if _, ok := reserved[path]; ok {
 			*found = append(*found, path)
 			continue // Everything below a reserved path is reserved as well.
 		}
 		if sub, ok := v.(map[string]any); ok {
-			collectReservedPaths(sub, path, found)
+			collectReservedPaths(sub, path, reserved, found)
 		}
 	}
 }

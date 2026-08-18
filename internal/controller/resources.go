@@ -143,17 +143,12 @@ func buildStatefulSet(cr *dbv1alpha1.OtelDBCluster, configHash string) *appsv1.S
 	n := namesFor(cr)
 	replicas := replicasOf(cr)
 
-	image := cr.Spec.Image
-	if image == "" {
-		image = defaultImage
-	}
-
 	podLabels := mergeLabels(commonLabels(cr), cr.Spec.PodLabels)
-	annotations := mergeLabels(map[string]string{"oteldb.io/config-hash": configHash}, cr.Spec.PodAnnotations)
+	annotations := mergeLabels(map[string]string{annConfigHash: configHash}, cr.Spec.PodAnnotations)
 
 	container := corev1.Container{
 		Name:            appName,
-		Image:           image,
+		Image:           imageOf(cr),
 		ImagePullPolicy: cr.Spec.ImagePullPolicy,
 		Args:            []string{"--config=" + configMountPath + "/" + configFileName},
 		Env:             podEnv(cr),
@@ -217,8 +212,8 @@ func podEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
 	n := namesFor(cr)
 	fqdnSuffix := fmt.Sprintf(".%s.%s.svc.cluster.local:%d", n.peerService(), cr.Namespace, peerPortOf(cr))
 	env := []corev1.EnvVar{
-		{Name: "OTEL_EXPORTER_PROMETHEUS_HOST", Value: "0.0.0.0"},
-		{Name: "OTEL_EXPORTER_PROMETHEUS_PORT", Value: fmt.Sprintf("%d", portSelfMetric)},
+		{Name: envPrometheusHost, Value: bindAllHost},
+		{Name: envPrometheusPort, Value: fmt.Sprintf("%d", portSelfMetric)},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
 			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 		}},
@@ -226,7 +221,7 @@ func podEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
 		{Name: "OTELDB_CLUSTER_ADDR", Value: "$(POD_NAME)" + fqdnSuffix},
 	}
 	if lvl := cr.Spec.LogLevel; lvl != "" {
-		env = append(env, corev1.EnvVar{Name: "OTEL_LOG_LEVEL", Value: lvl})
+		env = append(env, corev1.EnvVar{Name: envLogLevel, Value: lvl})
 	}
 	if z := cr.Spec.Cluster.StaticZone; z != "" {
 		env = append(env, corev1.EnvVar{Name: "OTELDB_CLUSTER_ZONE", Value: z})
@@ -270,15 +265,36 @@ func containerPorts(cr *dbv1alpha1.OtelDBCluster) []corev1.ContainerPort {
 	return ports
 }
 
-func httpProbe(path string) *corev1.Probe {
+// roleProbe is the HTTP probe shape every role shares: which port carries the health endpoints is
+// the only thing that differs between them.
+func roleProbe(path, portName string) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString(portNameHealth)},
+			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromString(portName)},
 		},
 		PeriodSeconds:    10,
 		TimeoutSeconds:   3,
 		FailureThreshold: 3,
 	}
+}
+
+func httpProbe(path string) *corev1.Probe { return roleProbe(path, portNameHealth) }
+
+// bindAll is the listen address for port: reachability is the Service's job.
+func bindAll(port int32) string { return fmt.Sprintf("%s:%d", bindAllHost, port) }
+
+// statelessPodEnv is the environment of a pod in either stateless pool. Unlike a storage pod it
+// carries no ring identity: neither odbingest nor odbselect joins the ring, so neither has an id,
+// address or zone to advertise.
+func statelessPodEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: envPrometheusHost, Value: bindAllHost},
+		{Name: envPrometheusPort, Value: fmt.Sprintf("%d", portSelfMetric)},
+	}
+	if lvl := cr.Spec.LogLevel; lvl != "" {
+		env = append(env, corev1.EnvVar{Name: envLogLevel, Value: lvl})
+	}
+	return env
 }
 
 func startupProbe(path string) *corev1.Probe {
@@ -310,11 +326,25 @@ func dataClaim(cr *dbv1alpha1.OtelDBCluster) corev1.PersistentVolumeClaim {
 	}
 }
 
+// imageOf is the cluster's oteldb image.
+func imageOf(cr *dbv1alpha1.OtelDBCluster) string {
+	if cr.Spec.Image != "" {
+		return cr.Spec.Image
+	}
+	return defaultImage
+}
+
 // affinityFor returns the user's affinity, or a default soft anti-affinity spreading replicas
 // across nodes.
 func affinityFor(cr *dbv1alpha1.OtelDBCluster) *corev1.Affinity {
-	if cr.Spec.Affinity != nil {
-		return cr.Spec.Affinity
+	return affinityOr(cr.Spec.Affinity, selectorLabels(cr))
+}
+
+// affinityOr returns given, or a default soft anti-affinity spreading the pods matching selector
+// across nodes.
+func affinityOr(given *corev1.Affinity, selector map[string]string) *corev1.Affinity {
+	if given != nil {
+		return given
 	}
 	return &corev1.Affinity{
 		PodAntiAffinity: &corev1.PodAntiAffinity{
@@ -322,7 +352,7 @@ func affinityFor(cr *dbv1alpha1.OtelDBCluster) *corev1.Affinity {
 				Weight: 100,
 				PodAffinityTerm: corev1.PodAffinityTerm{
 					TopologyKey:   "kubernetes.io/hostname",
-					LabelSelector: &metav1.LabelSelector{MatchLabels: selectorLabels(cr)},
+					LabelSelector: &metav1.LabelSelector{MatchLabels: selector},
 				},
 			}},
 		},

@@ -44,7 +44,7 @@ type OtelDBClusterReconciler struct {
 // +kubebuilder:rbac:groups=db.oteldb.io,resources=oteldbclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=db.oteldb.io,resources=oteldbclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=db.oteldb.io,resources=oteldbclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -104,6 +104,91 @@ func (r *OtelDBClusterReconciler) reconcile(ctx context.Context, cr *dbv1alpha1.
 	if err := r.apply(ctx, cr, buildStatefulSet(cr, hash)); err != nil {
 		return fmt.Errorf("statefulset: %w", err)
 	}
+	if err := r.reconcileIngest(ctx, cr, endpoints); err != nil {
+		return err
+	}
+	return r.reconcileQuery(ctx, cr, endpoints)
+}
+
+// reconcileIngest applies the stateless odbingest pool, or removes it when spec.ingest is absent.
+func (r *OtelDBClusterReconciler) reconcileIngest(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, endpoints []string) error {
+	if !ingestEnabled(cr) {
+		return r.pruneIngest(ctx, cr)
+	}
+
+	cm, err := buildIngestConfigMap(cr, endpoints)
+	if err != nil {
+		return err
+	}
+	if err := r.apply(ctx, cr, cm); err != nil {
+		return fmt.Errorf("ingest configmap: %w", err)
+	}
+	hash := configHash(cm.Data[ingestConfigFileName])
+
+	if err := r.apply(ctx, cr, buildIngestService(cr)); err != nil {
+		return fmt.Errorf("ingest service: %w", err)
+	}
+	if err := r.apply(ctx, cr, buildIngestDeployment(cr, hash)); err != nil {
+		return fmt.Errorf("ingest deployment: %w", err)
+	}
+	return nil
+}
+
+// pruneIngest deletes the ingest pool's objects. Owner references only collect them when the whole
+// cluster goes away, so dropping spec.ingest has to remove them explicitly.
+func (r *OtelDBClusterReconciler) pruneIngest(ctx context.Context, cr *dbv1alpha1.OtelDBCluster) error {
+	n := namesFor(cr)
+	objs := []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: n.ingestDeployment(), Namespace: cr.Namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: n.ingestService(), Namespace: cr.Namespace}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: n.ingestConfigMap(), Namespace: cr.Namespace}},
+	}
+	for _, obj := range objs {
+		if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete ingest %T: %w", obj, err)
+		}
+	}
+	return nil
+}
+
+// reconcileQuery applies the stateless odbselect pool, or removes it when spec.query is absent.
+func (r *OtelDBClusterReconciler) reconcileQuery(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, endpoints []string) error {
+	if !queryEnabled(cr) {
+		return r.pruneQuery(ctx, cr)
+	}
+
+	cm, err := buildQueryConfigMap(cr, endpoints)
+	if err != nil {
+		return err
+	}
+	if err := r.apply(ctx, cr, cm); err != nil {
+		return fmt.Errorf("query configmap: %w", err)
+	}
+	hash := configHash(cm.Data[queryConfigFileName])
+
+	if err := r.apply(ctx, cr, buildQueryService(cr)); err != nil {
+		return fmt.Errorf("query service: %w", err)
+	}
+	if err := r.apply(ctx, cr, buildQueryDeployment(cr, hash)); err != nil {
+		return fmt.Errorf("query deployment: %w", err)
+	}
+	return nil
+}
+
+// pruneQuery deletes the query pool's objects. Owner references only collect them when the whole
+// cluster goes away, so dropping spec.query has to remove them explicitly.
+func (r *OtelDBClusterReconciler) pruneQuery(ctx context.Context, cr *dbv1alpha1.OtelDBCluster) error {
+	n := namesFor(cr)
+	objs := []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: n.queryDeployment(), Namespace: cr.Namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: n.queryService(), Namespace: cr.Namespace}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: n.queryConfigMap(), Namespace: cr.Namespace}},
+	}
+	for _, obj := range objs {
+		if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete query %T: %w", obj, err)
+		}
+	}
 	return nil
 }
 
@@ -154,6 +239,11 @@ func reconcileInto(dst, src client.Object) {
 		d.Spec.ServiceName = s.Spec.ServiceName
 		d.Spec.PodManagementPolicy = s.Spec.PodManagementPolicy
 		d.Spec.Template = s.Spec.Template
+	case *appsv1.Deployment:
+		s := src.(*appsv1.Deployment)
+		d.Spec.Replicas = s.Spec.Replicas
+		d.Spec.Selector = s.Spec.Selector
+		d.Spec.Template = s.Spec.Template
 	}
 }
 
@@ -167,11 +257,27 @@ func (r *OtelDBClusterReconciler) updateStatus(ctx context.Context, cr *dbv1alph
 		return err
 	}
 
+	n := namesFor(cr)
+	ingestReady, err := r.deploymentReady(ctx, cr, ingestEnabled(cr), n.ingestDeployment())
+	if err != nil {
+		return err
+	}
+	queryReady, err := r.deploymentReady(ctx, cr, queryEnabled(cr), n.queryDeployment())
+	if err != nil {
+		return err
+	}
+
 	cr.Status.Replicas = desired
 	cr.Status.ReadyReplicas = ready
+	cr.Status.IngestReplicas = ingestReplicasOf(cr)
+	cr.Status.IngestReadyReplicas = ingestReady
+	cr.Status.QueryReplicas = queryReplicasOf(cr)
+	cr.Status.QueryReadyReplicas = queryReady
 	cr.Status.EtcdEndpoints = cr.Spec.Etcd.Endpoints
 	cr.Status.ObservedGeneration = cr.Generation
 
+	// The phase tracks the storage nodes: they are what holds the data, and a stateless pool that
+	// is still rolling out does not make the cluster unavailable.
 	switch {
 	case ready == 0:
 		cr.Status.Phase = dbv1alpha1.PhasePending
@@ -188,6 +294,22 @@ func (r *OtelDBClusterReconciler) updateStatus(ctx context.Context, cr *dbv1alph
 	setCondition(cr, dbv1alpha1.ConditionDegraded, metav1.ConditionFalse, "Reconciled", "reconciled successfully")
 
 	return r.Status().Update(ctx, cr)
+}
+
+// deploymentReady reads a stateless role's ready replica count, or zero when the role is disabled
+// or its Deployment does not exist yet.
+func (r *OtelDBClusterReconciler) deploymentReady(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, enabled bool, name string) (int32, error) {
+	if !enabled {
+		return 0, nil
+	}
+	deploy := &appsv1.Deployment{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: cr.Namespace, Name: name}, deploy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return deploy.Status.ReadyReplicas, nil
 }
 
 func (r *OtelDBClusterReconciler) setDegraded(ctx context.Context, cr *dbv1alpha1.OtelDBCluster, reason string, cause error) {
@@ -219,6 +341,7 @@ func (r *OtelDBClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dbv1alpha1.OtelDBCluster{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Named("oteldbcluster").
