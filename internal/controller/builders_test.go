@@ -78,6 +78,10 @@ func TestRenderConfigFileBackendDefaults(t *testing.T) {
 	if !ok || len(etcd) != 1 || etcd[0] != "http://etcd:2379" {
 		t.Errorf("etcd = %v", cluster["etcd"])
 	}
+	// The file backend is one PVC per pod, so partsync must be on or flushed parts never replicate.
+	if cluster["private_backend"] != true {
+		t.Errorf("private_backend = %v, want true for the file backend", cluster["private_backend"])
+	}
 	// Per-pod identity must NOT be baked into the shared config.
 	for _, k := range []string{"id", "addr", "zone"} {
 		if _, present := cluster[k]; present {
@@ -128,6 +132,49 @@ func TestRenderConfigS3(t *testing.T) {
 	if storage["wal_dir"] != "/var/lib/oteldb" {
 		t.Errorf("s3 backend should set wal_dir, got %v", storage["wal_dir"])
 	}
+}
+
+func TestRenderConfigPrivateBackend(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		backend  dbv1alpha1.StorageBackend
+		override *bool
+		want     bool
+	}{
+		{"file backend is per-pod PVC", dbv1alpha1.StorageBackendFile, nil, true},
+		{"s3 backend is a shared bucket", dbv1alpha1.StorageBackendS3, nil, false},
+		{"unset backend defaults to file", "", nil, true},
+		{"file backend on a shared volume", dbv1alpha1.StorageBackendFile, ptr.To(false), false},
+		{"s3 backend with per-node buckets", dbv1alpha1.StorageBackendS3, ptr.To(true), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cr := testCluster()
+			cr.Spec.Storage.Backend = tt.backend
+			cr.Spec.Cluster.PrivateBackend = tt.override
+			if tt.backend == dbv1alpha1.StorageBackendS3 {
+				cr.Spec.Storage.S3 = &dbv1alpha1.S3Spec{Bucket: "oteldb"}
+			}
+
+			out, err := renderConfig(cr, cr.Spec.Etcd.Endpoints)
+			require.NoError(t, err)
+			var cfg map[string]any
+			require.NoError(t, yaml.Unmarshal([]byte(out), &cfg))
+
+			cluster := cfg["storage"].(map[string]any)["cluster"].(map[string]any)
+			require.Equal(t, tt.want, cluster["private_backend"])
+		})
+	}
+}
+
+// Regression: storage.cluster is reserved, so extraConfig cannot reach private_backend and the CRD
+// field is the only supported route (oteldb/operator#16).
+func TestRenderConfigPrivateBackendNotReachableViaExtraConfig(t *testing.T) {
+	cr := testCluster()
+	cr.Spec.ExtraConfig = &runtime.RawExtension{
+		Raw: []byte(`{"storage":{"cluster":{"private_backend":true}}}`),
+	}
+	_, err := renderConfig(cr, cr.Spec.Etcd.Endpoints)
+	require.ErrorContains(t, err, "storage.cluster")
 }
 
 func TestRenderConfigS3RequiresBucket(t *testing.T) {

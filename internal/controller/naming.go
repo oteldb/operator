@@ -43,10 +43,11 @@ const (
 	keyLogsBackend     = "logs_backend"
 	keyProfilesBackend = "profiles_backend"
 
-	keyBackend = "backend"
-	keyDir     = "dir"
-	keyEtcd    = "etcd"
-	keyPort    = "port"
+	keyBackend        = "backend"
+	keyDir            = "dir"
+	keyEtcd           = "etcd"
+	keyPort           = "port"
+	keyPrivateBackend = "private_backend"
 )
 
 // Container ports exposed by every oteldb node. Names must be <= 15 chars (k8s port-name limit).
