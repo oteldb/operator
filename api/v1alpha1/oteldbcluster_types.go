@@ -113,6 +113,12 @@ type OtelDBClusterSpec struct {
 	// +optional
 	Service ServiceSpec `json:"service,omitempty"`
 
+	// Admin optionally publishes oteldb's admin API on a Service of its own. Absent — the default —
+	// publishes nothing: the API is still served inside every storage pod, but no Service routes to
+	// it.
+	// +optional
+	Admin *AdminSpec `json:"admin,omitempty"`
+
 	// Resources are the compute resources for each oteldb container.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -776,6 +782,33 @@ type LimitsSpec struct {
 	// so changing it does not affect existing data.
 	// +optional
 	MaxPartSize *resource.Quantity `json:"maxPartSize,omitempty"`
+}
+
+// AdminSpec publishes oteldb's admin API on a dedicated <name>-admin Service.
+//
+// The API is not optional inside the pod: oteldb registers it unconditionally and its bind defaults
+// to :8090, so every storage node is already serving it. What was missing is a way to reach it —
+// before the self-metrics port moved to 9464 it happened to be published under a port named
+// "metrics", and moving that port took the accidental exposure with it. Neither state was a
+// decision; this field is.
+//
+// It is a separate Service, and opt-in, because of what the API can do: it triggers the engine's
+// maintenance and compaction passes, and serves the stream-cost attribution report — documented
+// upstream as the heaviest call the storage library exposes, decoding every accounted byte column
+// of every live part. None of that belongs on the client Service that PromQL and OTLP share, where
+// an ingress or a broad NetworkPolicy would pick it up by default.
+//
+// A separate Service also keeps the exposure decision separate from the reachability decision: the
+// admin Service can stay ClusterIP while the client Service is a LoadBalancer, and it can carry its
+// own annotations (auth proxy, internal-only load balancer) without touching client traffic.
+//
+// oteldb has no auth on the admin API beyond the global spec.extraConfig auth block, so treat this
+// Service as privileged and restrict it with a NetworkPolicy.
+type AdminSpec struct {
+	// Service configures the <name>-admin Service. Its default type is ClusterIP, which is the
+	// intended shape: the admin API is an operator tool, not a client-facing endpoint.
+	// +optional
+	Service ServiceSpec `json:"service,omitempty"`
 }
 
 // ServiceSpec configures the client-facing Service.
