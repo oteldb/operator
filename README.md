@@ -162,6 +162,7 @@ for a fuller example including the S3 backend.
 | `policy.recompress` | `{after, level}`. Rewrites fully-cold parts with a higher-ratio Zstandard profile. Decode-transparent and lossless. |
 | `policy.ec` | `{data, parity, after}`. Erasure-codes fully-cold parts across `data+parity` nodes instead of RF full copies — `{4,2}` is 1.5x the logical bytes for two tolerated node losses, against 3x for RF=3. See [Erasure coding](#erasure-coding). |
 | `service.type` / `annotations` | Client Service exposing the query/ingest APIs. |
+| `admin` | Optional `<name>-admin` Service publishing oteldb's admin API (`8090`). Absent ⇒ no Service; the API is still served inside every storage pod. See [Admin API](#admin-api). |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `podSecurityContext`, `securityContext`, `podAnnotations`, `podLabels`, `serviceAccountName` | Standard pod scheduling/security knobs. |
 | `extraConfig` | Arbitrary raw oteldb config **deep-merged** over the generated config — for fields the CRD does not model (auth, prometheus tuning, …). Nested objects merge key by key (`storage.policy` does not wipe `storage.backend`); operator-owned paths are [reserved](#reserved-extraconfig-paths). |
 
@@ -278,7 +279,56 @@ Pyroscope and `9464` self-metrics, dropping any whose signal is disabled. `odbse
 its own listener, so these are published one-to-one; its health listener (`13133`) is probed, not
 published.
 
-`8090` is deliberately not exposed: it is oteldb's admin API bind, not a self-metrics endpoint.
+`8090` is oteldb's admin API bind, not a self-metrics endpoint. It is served in every storage pod
+whether or not anything publishes it, and it is deliberately kept off the client Service — set
+`spec.admin` to publish it on a Service of its own. See [Admin API](#admin-api).
+
+### Self-metrics
+
+Every pod exports its own metrics on `9464` in Prometheus format. The operator sets
+`OTEL_METRICS_EXPORTER=prometheus` alongside `OTEL_EXPORTER_PROMETHEUS_HOST/PORT`, because
+go-faster/sdk defaults that variable to `otlp` and only starts the `/metrics` server when it names
+`prometheus` — without it the published port served nothing.
+
+> **Behaviour change.** Self-metrics previously left the pods over OTLP only (to the SDK's default
+> endpoint), and `9464` was published but dead. They are now scraped from `9464` instead. If you
+> were collecting oteldb's self-metrics via OTLP, point a scrape at the `metrics` port on the client,
+> ingest and query Services.
+
+### Admin API
+
+oteldb's admin API (`8090`) reports build info, health, runtime and storage statistics, and it can
+trigger the engine's maintenance and compaction passes and the per-stream storage-cost attribution
+report — documented upstream as *the heaviest call the storage engine exposes*, since it decodes
+every accounted byte column of every live part.
+
+`spec.admin` publishes it on a dedicated `<name>-admin` Service. It is **opt-in and absent by
+default**:
+
+```yaml
+spec:
+  admin:
+    service:
+      type: ClusterIP   # the default
+```
+
+Three notes:
+
+- **It is a separate Service, not a port on the client Service.** An endpoint that can start a
+  compaction should not ride the Service that PromQL and OTLP share, where an ingress or a broad
+  NetworkPolicy picks it up by default. A separate Service also keeps exposure and reachability
+  independent: admin can stay `ClusterIP` while the client Service is a `LoadBalancer`, and it
+  carries its own annotations.
+- **Enabling it does not roll the pods.** oteldb registers the admin server unconditionally
+  (`cmd/oteldb/admin.go`), and its bind defaults to `:8090` whether or not the config declares the
+  block — so the listener already exists. The Service targets the port by number and the pod
+  template is untouched.
+- **It has no auth of its own.** Treat the Service as privileged and restrict it with a
+  NetworkPolicy, or add oteldb's auth via `spec.extraConfig`.
+
+Before this, the admin port was *accidentally* reachable: it was published under a port named
+`metrics`, and moving self-metrics to `9464` removed that exposure without anyone deciding it
+should go. Neither state was a decision; `spec.admin` is.
 
 ## Getting Started
 
@@ -318,4 +368,5 @@ Controller layout under `internal/controller/`:
 - `resources.go` — builds the ConfigMap, headless + client Services, and StatefulSet.
 - `ingest.go` / `query.go` — the stateless `odbingest` and `odbselect` pools: config, Service,
   Deployment.
+- `admin.go` — the opt-in admin API Service.
 - `naming.go` — names, labels, ports.
