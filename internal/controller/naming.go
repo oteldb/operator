@@ -65,11 +65,12 @@ const (
 	keyLogsBackend     = "logs_backend"
 	keyProfilesBackend = "profiles_backend"
 
-	keyBackend = "backend"
-	keyCluster = "cluster"
-	keyDir     = "dir"
-	keyEtcd    = "etcd"
-	keyPort    = "port"
+	keyBackend        = "backend"
+	keyCluster        = "cluster"
+	keyDir            = "dir"
+	keyEtcd           = "etcd"
+	keyPort           = "port"
+	keyPrivateBackend = "private_backend"
 )
 
 // Query API config block keys, shared by cmd/oteldb and cmd/odbselect.

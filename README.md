@@ -112,6 +112,7 @@ for a fuller example including the S3 backend.
 | `cluster.replicationFactor` | Replicas per write (RF). |
 | `cluster.shardsPerTenant` | Per-tenant series sharding across placement units. |
 | `cluster.peerPort` | Peer replication port (default 7946). |
+| `cluster.privateBackend` | Whether each node's durable backend is its own. Gates `cluster/partsync`, which replicates *flushed parts* and backfills a node that lost its disk — without it only the in-memory head is replicated and every part exists in one copy regardless of RF. Unset derives from `storage.backend`: `true` for `file` (per-pod PVC), `false` for `s3` (shared bucket). Needs an oteldb carrying [oteldb/oteldb#1264](https://github.com/oteldb/oteldb/pull/1264); older builds ignore the key silently. |
 | `cluster.etcdPrefix` | etcd key prefix (storage "root", default `/oteldb`). |
 | `cluster.staticZone` | Fixed failure-domain label for the cluster's nodes (ring zone-spreading). |
 | `signals` | Which signals to serve (all default on). Disabling one drops its backend, its API bind and its ports; disabling all is rejected. |
@@ -204,6 +205,8 @@ The query Service (`<name>-query`) exposes `9090` PromQL, `3200` TraceQL, `3100`
 Pyroscope and `9464` self-metrics, dropping any whose signal is disabled. `odbselect` serves each on
 its own listener, so these are published one-to-one; its health listener (`13133`) is probed, not
 published.
+
+`8090` is deliberately not exposed: it is oteldb's admin API bind, not a self-metrics endpoint.
 
 ## Getting Started
 
