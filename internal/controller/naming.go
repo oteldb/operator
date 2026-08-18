@@ -73,6 +73,15 @@ const (
 	keyPrivateBackend = "private_backend"
 )
 
+// odbingest tenant block keys.
+const (
+	keyTenant             = "tenant"
+	keyTenantHeader       = "header"
+	keyTenantResourceAttr = "resource_attributes"
+	keyTenantDefault      = "default"
+	keyTenantRequire      = "require"
+)
+
 // Query API config block keys, shared by cmd/oteldb and cmd/odbselect.
 const (
 	keyPrometheus = "prometheus"

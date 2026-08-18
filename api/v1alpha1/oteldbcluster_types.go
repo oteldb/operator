@@ -190,6 +190,9 @@ type EtcdSpec struct {
 // mismatch there does not fail — it resolves a different owner set than the nodes do, and writes
 // land where no read will look for them — so it is deliberately not configurable per pool.
 //
+// Writes route to the "default" tenant unless Tenant opts the pool into tenant resolution; see the
+// warning on that field before doing so.
+//
 // The odbingest binary is not yet shipped in the released oteldb image (it is absent from oteldb's
 // goreleaser builds and release Dockerfile). Until it is, set Image to a build that contains it.
 type IngestSpec struct {
@@ -251,15 +254,69 @@ type IngestSpec struct {
 	// +optional
 	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
 
+	// Tenant opts the ingest pool into multi-tenant write routing. Absent — the default — routes
+	// every write to the "default" tenant, exactly as an unconfigured odbingest does, and renders
+	// no tenant block at all.
+	//
+	// Leave it absent unless you are running a deliberate migration. oteldb's *read* path is still
+	// pinned to a single tenant: the query Backend's tenant id is never assigned, so every PromQL,
+	// LogQL, TraceQL and Pyroscope query resolves "default" (oteldb/oteldb#820). Enabling tenant
+	// resolution here therefore routes writes into tenants that nothing can currently query — the
+	// data is stored, under a different shard key, and is invisible until the read path catches up.
+	// The field exists so the deployment is configurable ahead of that, not because it is ready.
+	// +optional
+	Tenant *TenantSpec `json:"tenant,omitempty"`
+
 	// ExtraConfig is arbitrary additional odbingest config deeply merged over the generated
 	// config, as a top-level YAML/JSON object. Use it to set fields the CRD does not model, such as
 	// prometheus_remote_write.time_threshold or the OTLP body-size limits.
 	//
-	// The cluster block is reserved and rejected instead of merged: it must stay in step with the
-	// storage nodes. Configure it through spec.etcd and spec.cluster.
+	// The cluster and tenant blocks are reserved and rejected instead of merged: cluster must stay
+	// in step with the storage nodes, and tenant is modelled in full. Configure them through
+	// spec.etcd, spec.cluster and spec.ingest.tenant.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	ExtraConfig *runtime.RawExtension `json:"extraConfig,omitempty"`
+}
+
+// TenantSpec configures which tenant an ingested write routes to, mapping onto odbingest's tenant
+// config block.
+//
+// The sources compose narrowest-first: Header names the tenant of a whole request and wins, then
+// ResourceAttributes names the tenant of one resource within it, and Default backs both. A header
+// beats an attribute because a gateway that authenticated the sender sets the header, whereas an
+// attribute is whatever the sender put in its own payload.
+//
+// A tenant id picks the shard key, which picks the ring owners, so changing how tenants resolve
+// moves where data lands. That makes enabling this a migration rather than a config tweak — and,
+// while oteldb's read path is single-tenant (see IngestSpec.Tenant), a one-way one.
+type TenantSpec struct {
+	// Header is the request header — and OTLP/gRPC metadata key — carrying the tenant. Empty does
+	// not read a header. "X-Scope-OrgID" is what Grafana-stack senders (Loki, Mimir, and their
+	// Grafana datasources) put it in.
+	// +optional
+	Header string `json:"header,omitempty"`
+
+	// ResourceAttributes are OTLP resource attribute keys, read in order until one holds a usable
+	// tenant. Empty does not read resource attributes. "service.namespace" is the OTel-native
+	// candidate.
+	//
+	// A missing, non-string or malformed value falls back to Default rather than failing the batch:
+	// by the time a resource is framed, the request can no longer be answered with an error.
+	// +optional
+	// +listType=atomic
+	ResourceAttributes []string `json:"resourceAttributes,omitempty"`
+
+	// Default is the tenant a write routes to when no source names one. Empty uses odbingest's own
+	// default tenant, "default", which is where every write goes today.
+	// +optional
+	Default string `json:"default,omitempty"`
+
+	// Require refuses a request that does not carry Header with 400 (InvalidArgument over gRPC),
+	// instead of routing it to Default. Use it when two senders must not be able to land in one
+	// shared tenant by omitting the header. It needs Header to be set.
+	// +optional
+	Require bool `json:"require,omitempty"`
 }
 
 // QuerySpec configures the stateless odbselect query pool: a Deployment of nodes that serve the
