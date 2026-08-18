@@ -456,6 +456,17 @@ type ClusterSpec struct {
 	// +optional
 	ShardsPerTenant *int32 `json:"shardsPerTenant,omitempty"`
 
+	// PrivateBackend declares that every node's durable backend is its own, unshared by peers.
+	// It gates cluster/partsync: only a private backend replicates *flushed parts* between nodes
+	// and backfills a node that lost its disk. Without it the ring replicates just the in-memory
+	// head, so each flushed part exists in exactly one copy regardless of ReplicationFactor.
+	//
+	// Unset derives from Storage.Backend: "file" is per-node PVC and therefore private (true),
+	// "s3" is a shared bucket (false). Set explicitly only to override that — e.g. a per-node
+	// S3 bucket, or a "file" backend on a ReadWriteMany volume shared by all pods.
+	// +optional
+	PrivateBackend *bool `json:"privateBackend,omitempty"`
+
 	// PeerPort is the port peers use to reach each node's replication server.
 	// +kubebuilder:default=7946
 	// +optional

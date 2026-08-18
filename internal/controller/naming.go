@@ -65,11 +65,12 @@ const (
 	keyLogsBackend     = "logs_backend"
 	keyProfilesBackend = "profiles_backend"
 
-	keyBackend = "backend"
-	keyCluster = "cluster"
-	keyDir     = "dir"
-	keyEtcd    = "etcd"
-	keyPort    = "port"
+	keyBackend        = "backend"
+	keyCluster        = "cluster"
+	keyDir            = "dir"
+	keyEtcd           = "etcd"
+	keyPort           = "port"
+	keyPrivateBackend = "private_backend"
 )
 
 // Query API config block keys, shared by cmd/oteldb and cmd/odbselect.
@@ -85,15 +86,17 @@ const (
 
 // Container ports exposed by every oteldb node. Names must be <= 15 chars (k8s port-name limit).
 const (
-	portOTLPGRPC   = 4317
-	portOTLPHTTP   = 4318
-	portPromRW     = 19291
-	portPromHTTP   = 9090
-	portTempoHTTP  = 3200
-	portLokiHTTP   = 3100
-	portPyroscope  = 4040
-	portHealth     = 13133
-	portSelfMetric = 8090
+	portOTLPGRPC  = 4317
+	portOTLPHTTP  = 4318
+	portPromRW    = 19291
+	portPromHTTP  = 9090
+	portTempoHTTP = 3200
+	portLokiHTTP  = 3100
+	portPyroscope = 4040
+	portHealth    = 13133
+	// portSelfMetric is the OpenTelemetry default Prometheus exporter port. It must not be 8090:
+	// that is oteldb's own admin API bind (admin.bind defaults to :8090).
+	portSelfMetric = 9464
 	// portPeer is the default; the effective value comes from spec.cluster.peerPort.
 	portPeer = 7946
 )

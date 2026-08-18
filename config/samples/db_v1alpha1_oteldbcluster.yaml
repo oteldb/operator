@@ -28,6 +28,10 @@ spec:
     replicationFactor: 3
     shardsPerTenant: 4   # spread each tenant's series across 4 placement units
     peerPort: 7946
+    # privateBackend gates part replication (cluster/partsync). Unset it derives from
+    # storage.backend: true for file (per-pod PVC), false for the shared s3 bucket. Override only
+    # for an unusual topology, e.g. a file backend on a ReadWriteMany volume shared by all pods.
+    # privateBackend: true
 
   # All signals served from the clustered embedded engine.
   signals:

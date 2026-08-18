@@ -67,6 +67,7 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	// The cluster block. Only the deployment-wide settings live here; id/addr/zone come from env.
 	cluster := ringConfig(cr, etcdEndpoints)
 	cluster[keyPort] = int(peerPortOf(cr))
+	cluster[keyPrivateBackend] = privateBackendOf(cr)
 	storage[keyCluster] = cluster
 
 	// S3 shared backend (optional). The data dir doubles as the WAL dir so unflushed head data
@@ -161,6 +162,18 @@ func backendOf(cr *dbv1alpha1.OtelDBCluster) dbv1alpha1.StorageBackend {
 		return b
 	}
 	return dbv1alpha1.StorageBackendFile
+}
+
+// privateBackendOf reports whether each node's durable backend is its own, unshared by peers. It
+// gates cluster/partsync, which replicates flushed parts and backfills a node that lost its disk;
+// without it only the in-memory head is replicated, so every flushed part exists in exactly one
+// copy regardless of RF. The file backend is one PVC per pod and so is always private; s3 is a
+// bucket every node shares. spec.cluster.privateBackend overrides the derivation.
+func privateBackendOf(cr *dbv1alpha1.OtelDBCluster) bool {
+	if p := cr.Spec.Cluster.PrivateBackend; p != nil {
+		return *p
+	}
+	return backendOf(cr) == dbv1alpha1.StorageBackendFile
 }
 
 func dirOf(cr *dbv1alpha1.OtelDBCluster) string {
