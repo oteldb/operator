@@ -208,10 +208,15 @@ func buildStatefulSet(cr *dbv1alpha1.OtelDBCluster, configHash string) *appsv1.S
 
 // podEnv builds the per-pod environment: self-observability plus the per-pod cluster identity
 // (id = pod name, addr = pod FQDN via the headless service). Kubernetes expands $(POD_NAME).
+//
+// The self-metrics exporter is named explicitly. go-faster/sdk defaults OTEL_METRICS_EXPORTER to
+// "otlp" and only starts the Prometheus /metrics server when the variable names "prometheus", so
+// setting the host and port alone published a port that served nothing.
 func podEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
 	n := namesFor(cr)
 	fqdnSuffix := fmt.Sprintf(".%s.%s.svc.cluster.local:%d", n.peerService(), cr.Namespace, peerPortOf(cr))
 	env := []corev1.EnvVar{
+		{Name: envMetricsExporter, Value: valMetricsExporter},
 		{Name: envPrometheusHost, Value: bindAllHost},
 		{Name: envPrometheusPort, Value: fmt.Sprintf("%d", portSelfMetric)},
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
@@ -288,6 +293,7 @@ func bindAll(port int32) string { return fmt.Sprintf("%s:%d", bindAllHost, port)
 // address or zone to advertise.
 func statelessPodEnv(cr *dbv1alpha1.OtelDBCluster) []corev1.EnvVar {
 	env := []corev1.EnvVar{
+		{Name: envMetricsExporter, Value: valMetricsExporter},
 		{Name: envPrometheusHost, Value: bindAllHost},
 		{Name: envPrometheusPort, Value: fmt.Sprintf("%d", portSelfMetric)},
 	}

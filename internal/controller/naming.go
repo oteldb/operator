@@ -33,6 +33,7 @@ const (
 	valStorage     = "storage"         // oteldb signal-backend value and component label
 	valIngest      = "ingest"          // ingest component label
 	valQuery       = "query"           // query component label
+	valAdmin       = "admin"           // admin Service component label
 	defaultDataDir = "/var/lib/oteldb" // default storage.dir / WAL dir
 	keyBind        = "bind"            // oteldb per-API bind config key
 	// bindDisabled is odbselect's "do not serve this API" bind. An omitted block is not enough:
@@ -44,7 +45,14 @@ const (
 	envAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
 	envPrometheusHost     = "OTEL_EXPORTER_PROMETHEUS_HOST"
 	envPrometheusPort     = "OTEL_EXPORTER_PROMETHEUS_PORT"
-	envLogLevel           = "OTEL_LOG_LEVEL"
+	// envMetricsExporter selects go-faster/sdk's self-metrics exporter. It defaults to "otlp", and
+	// the Prometheus /metrics server is only started when this names "prometheus" — so without it
+	// the OTEL_EXPORTER_PROMETHEUS_HOST/PORT pair above configures a server that never runs.
+	envMetricsExporter = "OTEL_METRICS_EXPORTER"
+	// valMetricsExporter is what envMetricsExporter is set to, so the published self-metrics port
+	// actually serves.
+	valMetricsExporter = "prometheus"
+	envLogLevel        = "OTEL_LOG_LEVEL"
 
 	// annConfigHash carries the rendered config's digest on a pod template, so a config change rolls
 	// the workload.
@@ -108,6 +116,9 @@ const (
 	portSelfMetric = 9464
 	// portPeer is the default; the effective value comes from spec.cluster.peerPort.
 	portPeer = 7946
+	// portAdmin is oteldb's admin API bind (admin.bind defaults to :8090). Every storage pod serves
+	// it whether or not anything publishes it; spec.admin decides whether a Service does.
+	portAdmin = 8090
 )
 
 // Port names, shared by the container ports, the Services and the probes.
@@ -122,6 +133,7 @@ const (
 	portNameSelfMetric = "metrics"
 	portNameHealth     = "health-check"
 	portNamePeer       = "peer"
+	portNameAdmin      = "admin"
 	// portNameIngestHTTP is odbingest's single HTTP listener: OTLP/HTTP, Prometheus remote write
 	// and the health endpoints all share it (see cmd/odbingest/app.go, where otlp.Register and the
 	// remote write handler are mounted on one mux bound to prometheus_remote_write.bind).
@@ -153,6 +165,7 @@ func (n resourceNames) statefulSet() string      { return n.base }
 func (n resourceNames) configMap() string        { return n.base + "-config" }
 func (n resourceNames) peerService() string      { return n.base + "-peers" }
 func (n resourceNames) clientService() string    { return n.base }
+func (n resourceNames) adminService() string     { return n.base + "-admin" }
 func (n resourceNames) ingestDeployment() string { return n.base + "-ingest" }
 func (n resourceNames) ingestConfigMap() string  { return n.base + "-ingest-config" }
 func (n resourceNames) ingestService() string    { return n.base + "-ingest" }

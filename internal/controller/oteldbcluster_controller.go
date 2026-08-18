@@ -104,10 +104,30 @@ func (r *OtelDBClusterReconciler) reconcile(ctx context.Context, cr *dbv1alpha1.
 	if err := r.apply(ctx, cr, buildStatefulSet(cr, hash)); err != nil {
 		return fmt.Errorf("statefulset: %w", err)
 	}
+	if err := r.reconcileAdmin(ctx, cr); err != nil {
+		return err
+	}
 	if err := r.reconcileIngest(ctx, cr, endpoints); err != nil {
 		return err
 	}
 	return r.reconcileQuery(ctx, cr, endpoints)
+}
+
+// reconcileAdmin publishes the admin API's Service, or removes it when spec.admin is absent. Only
+// the Service is conditional: oteldb serves the admin API in every storage pod either way.
+func (r *OtelDBClusterReconciler) reconcileAdmin(ctx context.Context, cr *dbv1alpha1.OtelDBCluster) error {
+	n := namesFor(cr)
+	if !adminEnabled(cr) {
+		svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: n.adminService(), Namespace: cr.Namespace}}
+		if err := r.Delete(ctx, svc); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("delete admin service: %w", err)
+		}
+		return nil
+	}
+	if err := r.apply(ctx, cr, buildAdminService(cr)); err != nil {
+		return fmt.Errorf("admin service: %w", err)
+	}
+	return nil
 }
 
 // reconcileIngest applies the stateless odbingest pool, or removes it when spec.ingest is absent.
