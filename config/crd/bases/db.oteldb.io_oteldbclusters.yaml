@@ -57,6 +57,32 @@ spec:
           spec:
             description: spec defines the desired state of OtelDBCluster
             properties:
+              admin:
+                description: |-
+                  Admin optionally publishes oteldb's admin API on a Service of its own. Absent — the default —
+                  publishes nothing: the API is still served inside every storage pod, but no Service routes to
+                  it.
+                properties:
+                  service:
+                    description: |-
+                      Service configures the <name>-admin Service. Its default type is ClusterIP, which is the
+                      intended shape: the admin API is an operator tool, not a client-facing endpoint.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations added to the client Service.
+                        type: object
+                      type:
+                        default: ClusterIP
+                        description: Type of the client Service.
+                        enum:
+                        - ClusterIP
+                        - NodePort
+                        - LoadBalancer
+                        type: string
+                    type: object
+                type: object
               affinity:
                 description: |-
                   Affinity for oteldb pods. When empty, the operator applies a soft anti-affinity that
