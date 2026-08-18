@@ -35,6 +35,7 @@ import (
 // set, so writes land where no read will look for them.
 var ingestReservedConfigPaths = map[string]string{
 	keyCluster: hintRingFromSpec,
+	keyTenant:  "use spec.ingest.tenant",
 }
 
 func ingestEnabled(cr *dbv1alpha1.OtelDBCluster) bool { return cr.Spec.Ingest != nil }
@@ -52,6 +53,10 @@ func ingestReplicasOf(cr *dbv1alpha1.OtelDBCluster) int32 {
 // renderIngestConfig builds odbingest.yml. odbingest holds no data and joins nothing, so the whole
 // config is the ring it routes into plus the two listeners it serves.
 func renderIngestConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string, error) {
+	if err := validateIngestTenant(cr); err != nil {
+		return "", err
+	}
+
 	cfg := map[string]any{
 		keyCluster: ringConfig(cr, etcdEndpoints),
 		"prometheus_remote_write": map[string]any{
@@ -60,6 +65,10 @@ func renderIngestConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (s
 		"otlp": map[string]any{
 			"grpc_bind": bindAll(portOTLPGRPC),
 		},
+	}
+
+	if tenant := renderTenant(cr.Spec.Ingest.Tenant); tenant != nil {
+		cfg[keyTenant] = tenant
 	}
 
 	if raw := cr.Spec.Ingest.ExtraConfig; raw != nil && len(raw.Raw) > 0 {
@@ -233,3 +242,100 @@ func buildIngestDeployment(cr *dbv1alpha1.OtelDBCluster, configHash string) *app
 }
 
 func ingestProbe(path string) *corev1.Probe { return roleProbe(path, portNameIngestHTTP) }
+
+// renderTenant builds odbingest's tenant block, or nil when the spec configures nothing. odbingest
+// installs no resolver for an empty block, which is the unconfigured behaviour: everything routes
+// to "default".
+func renderTenant(spec *dbv1alpha1.TenantSpec) map[string]any {
+	if spec == nil {
+		return nil
+	}
+
+	tenant := map[string]any{}
+	if spec.Header != "" {
+		tenant[keyTenantHeader] = spec.Header
+	}
+	if len(spec.ResourceAttributes) > 0 {
+		attrs := make([]any, 0, len(spec.ResourceAttributes))
+		for _, k := range spec.ResourceAttributes {
+			attrs = append(attrs, k)
+		}
+		tenant[keyTenantResourceAttr] = attrs
+	}
+	if spec.Default != "" {
+		tenant[keyTenantDefault] = spec.Default
+	}
+	// require is only meaningful alongside a header, which validateIngestTenant enforces, so an
+	// unset one is left out rather than rendered as an explicit false.
+	if spec.Require {
+		tenant[keyTenantRequire] = true
+	}
+
+	if len(tenant) == 0 {
+		return nil
+	}
+	return tenant
+}
+
+// maxTenantLen bounds a tenant id, mirroring cmd/odbingest. A tenant id becomes a shard key, which
+// becomes a backend path segment and an etcd key component.
+const maxTenantLen = 150
+
+// validateIngestTenant rejects a tenant block odbingest would refuse at startup, or that would
+// resolve to nothing. Every check mirrors cmd/odbingest's newTenantResolver and parseTenantID: a
+// pod that crash-loops on its config is a worse report than a Degraded condition naming the field.
+func validateIngestTenant(cr *dbv1alpha1.OtelDBCluster) error {
+	if !ingestEnabled(cr) {
+		return nil
+	}
+	spec := cr.Spec.Ingest.Tenant
+	if spec == nil {
+		return nil
+	}
+
+	if spec.Require && spec.Header == "" {
+		return invalidSpec("spec.ingest.tenant.require needs spec.ingest.tenant.header: " +
+			"there is no header to require")
+	}
+	for i, key := range spec.ResourceAttributes {
+		if key == "" {
+			return invalidSpec("spec.ingest.tenant.resourceAttributes[%d] must not be empty", i)
+		}
+	}
+	if spec.Default != "" {
+		if err := validateTenantID(spec.Default); err != nil {
+			return invalidSpec("spec.ingest.tenant.default: %s", err)
+		}
+	}
+
+	// A block that names no source resolves nothing: odbingest builds no resolver and routes to
+	// "default", so the stanza is present and inert.
+	if spec.Header == "" && spec.Default == "" && len(spec.ResourceAttributes) == 0 {
+		return invalidSpec("spec.ingest.tenant sets no source: give it a header, " +
+			"resourceAttributes or a default, or remove the block")
+	}
+
+	return nil
+}
+
+// validateTenantID mirrors cmd/odbingest's parseTenantID. The character set is what stays safe as a
+// backend path segment and an etcd key.
+func validateTenantID(s string) error {
+	switch {
+	case len(s) > maxTenantLen:
+		return fmt.Errorf("tenant id longer than %d bytes", maxTenantLen)
+	case s == ".", s == "..":
+		return fmt.Errorf("invalid tenant id %q", s)
+	}
+	for _, c := range []byte(s) {
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.':
+		default:
+			return fmt.Errorf("invalid character %q in tenant id", string(c))
+		}
+	}
+	return nil
+}
