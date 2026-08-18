@@ -2062,8 +2062,9 @@ spec:
                       config, as a top-level YAML/JSON object. Use it to set fields the CRD does not model, such as
                       prometheus_remote_write.time_threshold or the OTLP body-size limits.
 
-                      The cluster block is reserved and rejected instead of merged: it must stay in step with the
-                      storage nodes. Configure it through spec.etcd and spec.cluster.
+                      The cluster and tenant blocks are reserved and rejected instead of merged: cluster must stay
+                      in step with the storage nodes, and tenant is modelled in full. Configure them through
+                      spec.etcd, spec.cluster and spec.ingest.tenant.
                     type: object
                     x-kubernetes-preserve-unknown-fields: true
                   image:
@@ -2601,6 +2602,49 @@ spec:
                       ServiceAccountName is the ServiceAccount for the odbingest pods. Empty falls back to
                       spec.serviceAccountName.
                     type: string
+                  tenant:
+                    description: |-
+                      Tenant opts the ingest pool into multi-tenant write routing. Absent — the default — routes
+                      every write to the "default" tenant, exactly as an unconfigured odbingest does, and renders
+                      no tenant block at all.
+
+                      Leave it absent unless you are running a deliberate migration. oteldb's *read* path is still
+                      pinned to a single tenant: the query Backend's tenant id is never assigned, so every PromQL,
+                      LogQL, TraceQL and Pyroscope query resolves "default" (oteldb/oteldb#820). Enabling tenant
+                      resolution here therefore routes writes into tenants that nothing can currently query — the
+                      data is stored, under a different shard key, and is invisible until the read path catches up.
+                      The field exists so the deployment is configurable ahead of that, not because it is ready.
+                    properties:
+                      default:
+                        description: |-
+                          Default is the tenant a write routes to when no source names one. Empty uses odbingest's own
+                          default tenant, "default", which is where every write goes today.
+                        type: string
+                      header:
+                        description: |-
+                          Header is the request header — and OTLP/gRPC metadata key — carrying the tenant. Empty does
+                          not read a header. "X-Scope-OrgID" is what Grafana-stack senders (Loki, Mimir, and their
+                          Grafana datasources) put it in.
+                        type: string
+                      require:
+                        description: |-
+                          Require refuses a request that does not carry Header with 400 (InvalidArgument over gRPC),
+                          instead of routing it to Default. Use it when two senders must not be able to land in one
+                          shared tenant by omitting the header. It needs Header to be set.
+                        type: boolean
+                      resourceAttributes:
+                        description: |-
+                          ResourceAttributes are OTLP resource attribute keys, read in order until one holds a usable
+                          tenant. Empty does not read resource attributes. "service.namespace" is the OTel-native
+                          candidate.
+
+                          A missing, non-string or malformed value falls back to Default rather than failing the batch:
+                          by the time a resource is framed, the request can no longer be answered with an error.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    type: object
                   tolerations:
                     description: Tolerations for odbingest pods.
                     items:
