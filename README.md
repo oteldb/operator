@@ -46,6 +46,39 @@ operator renders all three roles from the same `spec.cluster`, so the mismatch c
 > `ghcr.io/oteldb/oteldb` tag contains either one. Set `spec.ingest.image` / `spec.query.image` to a
 > build that ships them until that is fixed upstream.
 
+#### Ingest tenancy
+
+`spec.ingest.tenant` maps onto odbingest's `tenant` block
+([oteldb/oteldb#1280](https://github.com/oteldb/oteldb/pull/1280)) and resolves the tenant a write
+routes to. The sources compose narrowest-first — `header` (a whole request) beats
+`resourceAttributes` (one resource within it) beats `default`:
+
+```yaml
+spec:
+  ingest:
+    tenant:
+      header: X-Scope-OrgID          # what Grafana-stack senders use
+      resourceAttributes: [service.namespace]
+      default: shared
+      require: false                 # 400 a request with no header instead of using default
+```
+
+> **Leave it absent unless you are running a deliberate migration.** oteldb's *read* path is still
+> pinned to one tenant: the query `Backend`'s tenant id is never assigned, so every PromQL, LogQL,
+> TraceQL and Pyroscope query resolves `"default"`
+> ([oteldb/oteldb#820](https://github.com/oteldb/oteldb/issues/820)). Turning tenant resolution on
+> at ingest today routes writes into tenants **nothing can query** — the data is stored, under a
+> different shard key, and is invisible until the read path catches up. The field exists so the
+> deployment is configurable ahead of that, not because it is ready.
+
+Absent renders no `tenant` block at all, which is byte-identical to the config an ingest pool got
+before this field existed: odbingest installs no resolver and every write lands in `"default"`.
+
+Because a tenant id picks the shard key, which picks the ring owners, changing how tenants resolve
+moves where data lands — a migration, not a config tweak. The operator validates what odbingest
+would otherwise crash-loop on (`require` without `header`, an empty attribute key, a `default` that
+is not a legal tenant id, a block naming no source at all) and reports it as `Degraded`/`InvalidSpec`.
+
 #### The query pool's shape
 
 `odbingest` serves OTLP/HTTP, remote write and its health endpoints on one listener. `odbselect`
@@ -105,7 +138,8 @@ for a fuller example including the S3 backend.
 | Field | Purpose |
 |---|---|
 | `replicas` | Number of oteldb storage nodes (StatefulSet size). Use `>= cluster.replicationFactor`. |
-| `ingest` | Optional stateless `odbingest` write pool (Deployment). Absent ⇒ symmetric nodes handle ingest. Takes `replicas` (default 2), `image`, `service`, `extraConfig` and the standard scheduling/security knobs. |
+| `ingest` | Optional stateless `odbingest` write pool (Deployment). Absent ⇒ symmetric nodes handle ingest. Takes `replicas` (default 2), `image`, `service`, `tenant`, `extraConfig` and the standard scheduling/security knobs. |
+| `ingest.tenant` | Opt-in multi-tenant write routing: `{header, resourceAttributes, default, require}`. **Absent by default, and that is the recommended setting** — see [Ingest tenancy](#ingest-tenancy). |
 | `query` | Optional stateless `odbselect` query pool (Deployment). Absent ⇒ symmetric nodes answer queries. Same knobs as `ingest`. Which APIs it serves follows `spec.signals`. |
 | `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.46.0`). |
 | `etcd.endpoints` | **Required.** External etcd endpoint list. |
@@ -199,7 +233,8 @@ spec field to use instead.
 `storage.policy` is now modelled in full, so the whole block is reserved.
 
 `spec.ingest.extraConfig` is merged over the generated `odbingest.yml` under the same rules, with
-the whole `cluster` block reserved for `spec.cluster` and `spec.etcd.endpoints`.
+the whole `cluster` block reserved for `spec.cluster` and `spec.etcd.endpoints`, and the whole
+`tenant` block reserved for `spec.ingest.tenant`.
 
 `spec.query.extraConfig` is merged over the generated `odbselect.yml`, reserving `cluster` and the
 five listener addresses (`prometheus.bind`, `loki.bind`, `tempo.bind`, `pyroscope.bind`,
