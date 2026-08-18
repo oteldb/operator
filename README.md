@@ -126,6 +126,7 @@ for a fuller example including the S3 backend.
 | `policy.downsample[]` | Merge-time age-tiered rollup: `{after, interval, agg}`. Samples past `after` collapse to one per `interval` bucket. **Lossy and irreversible.** |
 | `policy.precision[]` | Age-tiered lossy float precision: `{after, bits}`. Parts past `after` keep only `bits` mantissa bits. **Lossy and irreversible.** |
 | `policy.recompress` | `{after, level}`. Rewrites fully-cold parts with a higher-ratio Zstandard profile. Decode-transparent and lossless. |
+| `policy.ec` | `{data, parity, after}`. Erasure-codes fully-cold parts across `data+parity` nodes instead of RF full copies — `{4,2}` is 1.5x the logical bytes for two tolerated node losses, against 3x for RF=3. See [Erasure coding](#erasure-coding). |
 | `service.type` / `annotations` | Client Service exposing the query/ingest APIs. |
 | `resources`, `nodeSelector`, `affinity`, `tolerations`, `topologySpreadConstraints`, `podSecurityContext`, `securityContext`, `podAnnotations`, `podLabels`, `serviceAccountName` | Standard pod scheduling/security knobs. |
 | `extraConfig` | Arbitrary raw oteldb config **deep-merged** over the generated config — for fields the CRD does not model (auth, prometheus tuning, …). Nested objects merge key by key (`storage.policy` does not wipe `storage.backend`); operator-owned paths are [reserved](#reserved-extraconfig-paths). |
@@ -135,6 +136,40 @@ for a fuller example including the S3 backend.
 > builds — including the operator's current default image — ignore unknown config keys silently,
 > so on those the two newer blocks are accepted by the API server and have no effect. Pin a newer
 > `spec.image` before relying on them.
+
+### Erasure coding
+
+`spec.policy.ec` is the one storage policy that is only reachable in this operator's topology. The
+engine gates erasure coding on a **shared-nothing cluster** — cluster mode *and* a private per-node
+backend — which is precisely what an `OtelDBCluster` deploys: etcd is required, and the default
+`file` backend is one PVC per pod. A single-node oteldb cannot use it, and neither can a cluster on
+a shared bucket, where the store owns durability and every part stays full-copy.
+
+```yaml
+spec:
+  replicas: 6
+  policy:
+    ec:
+      data: 4
+      parity: 2
+      after: 72h   # omit to erasure-code every part
+```
+
+Two consequences are worth knowing before turning it on.
+
+**`data+parity` replaces the replication factor.** Under an EC policy the engine's replication-factor
+lookup returns `data+parity` and ignores the configured RF — for the unflushed head as well as the
+converted parts. Setting both would mean one of them is silently dropped, so the operator
+**rejects** `spec.policy.ec` together with `spec.cluster.replicationFactor` rather than pick a
+winner. It also rejects a scheme with more shards than `spec.replicas`, since the ring would
+otherwise clamp the placement to the members it has.
+
+**Rack safety needs zones.** A placement survives losing a whole failure domain only with at least
+`ceil((data+parity)/parity)` distinct zones — 3 for `{4,2}`. Below that the engine converts anyway
+and warns; spread the nodes with `spec.topologySpreadConstraints` to earn it.
+
+Erasure coding also needs an oteldb carrying [oteldb/oteldb#1279](https://github.com/oteldb/oteldb/pull/1279);
+older builds ignore the key silently.
 
 ### Reserved `extraConfig` paths
 
@@ -159,7 +194,7 @@ spec field to use instead.
 | `storage.s3` | `spec.storage.s3` |
 | `storage.cluster` (whole subtree) | `spec.cluster`, `spec.etcd.endpoints` |
 | `storage.flush_interval`, `storage.read_cache_bytes`, `storage.decode_cache_bytes`, `storage.decode_memory_bytes`, `storage.aggregate_stats` | `spec.engine` |
-| `storage.policy.retention`, `storage.policy.limits`, `storage.policy.downsample`, `storage.policy.precision`, `storage.policy.recompress` | `spec.policy` |
+| `storage.policy.retention`, `storage.policy.limits`, `storage.policy.downsample`, `storage.policy.precision`, `storage.policy.recompress`, `storage.policy.ec` | `spec.policy` |
 
 `storage.policy` is now modelled in full, so the whole block is reserved.
 

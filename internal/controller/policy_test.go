@@ -243,7 +243,7 @@ func TestValidateExtraConfigReservedPolicyPaths(t *testing.T) {
 // does not lock users out of the rest of storage.policy.
 // Every storage.policy key the CRD models is reserved, so extraConfig cannot fight spec.policy.
 func TestValidateExtraConfigPolicyFullyReserved(t *testing.T) {
-	for _, key := range []string{"retention", "limits", "downsample", "precision", "recompress"} {
+	for _, key := range []string{"retention", "limits", "downsample", "precision", "recompress", "ec"} {
 		t.Run(key, func(t *testing.T) {
 			err := validateExtraConfig(map[string]any{
 				"storage": map[string]any{"policy": map[string]any{key: "whatever"}},

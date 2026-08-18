@@ -52,6 +52,7 @@ var reservedConfigPaths = map[string]string{
 	"storage.policy.downsample": "use spec.policy.downsample",
 	"storage.policy.precision":  "use spec.policy.precision",
 	"storage.policy.recompress": "use spec.policy.recompress",
+	"storage.policy.ec":         "use spec.policy.ec",
 }
 
 // validationError marks a spec problem that no amount of retrying can fix: the reconcile is
