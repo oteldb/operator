@@ -99,5 +99,42 @@ var _ = Describe("OtelDBCluster Controller", func() {
 			Expect(sts.Spec.ServiceName).To(Equal(resourceName + "-peers"))
 			Expect(sts.OwnerReferences).NotTo(BeEmpty())
 		})
+
+		It("should publish and prune the admin Service with spec.admin", func() {
+			controllerReconciler := &OtelDBClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			adminName := types.NamespacedName{Name: resourceName + "-admin", Namespace: resourceNamespace}
+
+			By("not publishing the admin API by default")
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, adminName, &corev1.Service{}))).To(BeTrue())
+
+			By("publishing it once spec.admin is set")
+			resource := &dbv1alpha1.OtelDBCluster{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Spec.Admin = &dbv1alpha1.AdminSpec{}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, adminName, svc)).To(Succeed())
+			Expect(svc.Spec.Ports).To(HaveLen(1))
+			Expect(svc.Spec.Ports[0].Port).To(BeEquivalentTo(portAdmin))
+			Expect(svc.OwnerReferences).NotTo(BeEmpty())
+
+			By("pruning it again when spec.admin is removed")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Spec.Admin = nil
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, adminName, &corev1.Service{}))).To(BeTrue())
+		})
 	})
 })

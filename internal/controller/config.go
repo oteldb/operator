@@ -65,20 +65,10 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	}
 
 	// The cluster block. Only the deployment-wide settings live here; id/addr/zone come from env.
-	cluster := map[string]any{
-		keyEtcd: etcdEndpoints,
-		keyPort: int(peerPortOf(cr)),
-	}
-	if rf := cr.Spec.Cluster.ReplicationFactor; rf != nil {
-		cluster["rf"] = int(*rf)
-	}
-	if s := cr.Spec.Cluster.ShardsPerTenant; s != nil {
-		cluster["shards_per_tenant"] = int(*s)
-	}
-	if p := cr.Spec.Cluster.EtcdPrefix; p != "" {
-		cluster["root"] = p
-	}
-	storage["cluster"] = cluster
+	cluster := ringConfig(cr, etcdEndpoints)
+	cluster[keyPort] = int(peerPortOf(cr))
+	cluster[keyPrivateBackend] = privateBackendOf(cr)
+	storage[keyCluster] = cluster
 
 	// S3 shared backend (optional). The data dir doubles as the WAL dir so unflushed head data
 	// survives restarts. Credentials are injected via env (AWS default chain), never the config.
@@ -150,11 +140,40 @@ func renderConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) (string,
 	return string(out), nil
 }
 
+// ringConfig renders the ring parameters every role must agree on. A role that resolves a different
+// owner set than the storage nodes do does not fail — it reads and writes where the others do not
+// look — so all of them render from this one function.
+func ringConfig(cr *dbv1alpha1.OtelDBCluster, etcdEndpoints []string) map[string]any {
+	ring := map[string]any{keyEtcd: etcdEndpoints}
+	if rf := cr.Spec.Cluster.ReplicationFactor; rf != nil {
+		ring["rf"] = int(*rf)
+	}
+	if s := cr.Spec.Cluster.ShardsPerTenant; s != nil {
+		ring["shards_per_tenant"] = int(*s)
+	}
+	if p := cr.Spec.Cluster.EtcdPrefix; p != "" {
+		ring["root"] = p
+	}
+	return ring
+}
+
 func backendOf(cr *dbv1alpha1.OtelDBCluster) dbv1alpha1.StorageBackend {
 	if b := cr.Spec.Storage.Backend; b != "" {
 		return b
 	}
 	return dbv1alpha1.StorageBackendFile
+}
+
+// privateBackendOf reports whether each node's durable backend is its own, unshared by peers. It
+// gates cluster/partsync, which replicates flushed parts and backfills a node that lost its disk;
+// without it only the in-memory head is replicated, so every flushed part exists in exactly one
+// copy regardless of RF. The file backend is one PVC per pod and so is always private; s3 is a
+// bucket every node shares. spec.cluster.privateBackend overrides the derivation.
+func privateBackendOf(cr *dbv1alpha1.OtelDBCluster) bool {
+	if p := cr.Spec.Cluster.PrivateBackend; p != nil {
+		return *p
+	}
+	return backendOf(cr) == dbv1alpha1.StorageBackendFile
 }
 
 func dirOf(cr *dbv1alpha1.OtelDBCluster) string {
