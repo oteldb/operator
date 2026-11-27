@@ -114,8 +114,7 @@ spec:
 # Example splitting ingest off the storage nodes: three storage nodes plus a stateless odbingest
 # pool that scales on its own. The pool holds no data and is not a ring member — it watches etcd
 # for membership and routes each shard to its primary, so scaling `replicas` needs no change here.
-#
-# NOTE: odbingest is not shipped in the released oteldb image yet, hence the explicit image below.
+# The ingest pool uses the operator's default oteldb image.
 apiVersion: db.oteldb.io/v1alpha1
 kind: OtelDBCluster
 metadata:
@@ -130,7 +129,6 @@ spec:
 
   ingest:
     replicas: 6
-    image: "ghcr.io/oteldb/oteldb:with-odbingest"
     resources:
       requests:
         cpu: "1"

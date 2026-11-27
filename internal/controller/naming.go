@@ -23,7 +23,7 @@ import (
 )
 
 // defaultImage is the oteldb image used when the CR does not pin one.
-const defaultImage = "ghcr.io/oteldb/oteldb:v0.46.0"
+const defaultImage = "ghcr.io/oteldb/oteldb:v0.54.0"
 
 // Repeated string values, extracted so a single source of truth drives config and labels.
 const (

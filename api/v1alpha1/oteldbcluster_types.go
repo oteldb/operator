@@ -179,8 +179,7 @@ type EtcdSpec struct {
 // mismatch there does not fail — it resolves a different owner set than the nodes do, and writes
 // land where no read will look for them — so it is deliberately not configurable per pool.
 //
-// The odbingest binary is not yet shipped in the released oteldb image (it is absent from oteldb's
-// goreleaser builds and release Dockerfile). Until it is, set Image to a build that contains it.
+// Set Image to a build containing /usr/local/bin/odbingest when the cluster image predates it.
 type IngestSpec struct {
 	// Replicas is the number of odbingest pods. They hold no data, so this is purely a throughput
 	// and availability knob and can be changed freely.

@@ -39,12 +39,10 @@ What the pool *does* need is the ring's shape — `replicationFactor`, `shardsPe
 do, and writes land where no read will look for them. The operator renders both roles from the same
 `spec.cluster`, so the mismatch cannot be expressed.
 
-> **`odbingest` is not in the released oteldb image yet.** It is absent from oteldb's goreleaser
-> builds and `release.Dockerfile`, so no published `ghcr.io/oteldb/oteldb` tag contains the binary.
-> Set `spec.ingest.image` to a build that ships it until that is fixed upstream.
+The default cluster image ships `/usr/local/bin/odbingest`. If you pin an older storage image,
+set `spec.ingest.image` to an image containing that binary.
 
-A stateless `odbselect` query pool (`spec.query`) is the matching read half; it is not implemented
-yet, pending [oteldb/oteldb#1266](https://github.com/oteldb/oteldb/pull/1266).
+Send queries to the storage Service. The operator provisions the separate ingest pool only.
 
 ### etcd is bring-your-own
 
@@ -86,7 +84,7 @@ for a fuller example including the S3 backend.
 |---|---|
 | `replicas` | Number of oteldb storage nodes (StatefulSet size). Use `>= cluster.replicationFactor`. |
 | `ingest` | Optional stateless `odbingest` write pool (Deployment). Absent ⇒ symmetric nodes handle ingest. Takes `replicas` (default 2), `image`, `service`, `extraConfig` and the standard scheduling/security knobs. |
-| `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.46.0`). |
+| `image` / `imagePullPolicy` / `imagePullSecrets` | oteldb container image (default `ghcr.io/oteldb/oteldb:v0.54.0`). |
 | `etcd.endpoints` | **Required.** External etcd endpoint list. |
 | `storage.backend` | `file` (default, per-node PVC) or `s3` (shared object store). |
 | `storage.dir` / `size` / `storageClassName` / `accessModes` | Per-pod data volume (parts + WAL). |
